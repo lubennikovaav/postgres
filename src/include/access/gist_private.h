@@ -86,6 +86,7 @@ typedef struct GISTSTATE
 	FmgrInfo	picksplitFn[INDEX_MAX_KEYS];
 	FmgrInfo	equalFn[INDEX_MAX_KEYS];
 	FmgrInfo	distanceFn[INDEX_MAX_KEYS];
+	FmgrInfo	fetchFn[INDEX_MAX_KEYS];
 
 	/* Collations to pass to the support functions */
 	Oid			supportCollation[INDEX_MAX_KEYS];
@@ -117,6 +118,7 @@ typedef struct GISTSearchHeapItem
 {
 	ItemPointerData heapPtr;
 	bool		recheck;		/* T if quals must be rechecked */
+	IndexTuple ftup;		/* Tuple contains datum fetched from key. For Index-only scans. ftup = fetched tuple*/
 } GISTSearchHeapItem;
 
 /* Unvisited item, either index page or heap tuple */
@@ -129,6 +131,7 @@ typedef struct GISTSearchItem
 		GistNSN		parentlsn;	/* parent page's LSN, if index page */
 		/* we must store parentlsn to detect whether a split occurred */
 		GISTSearchHeapItem heap;	/* heap info, if heap tuple */
+		//IndexTuple ftup;		/* Tuple contains datum fetched from key. For Index-only scans. ftup = fetched tuple*/
 	}			data;
 } GISTSearchItem;
 
@@ -423,6 +426,7 @@ typedef struct GiSTOptions
 /* gist.c */
 extern Datum gistbuildempty(PG_FUNCTION_ARGS);
 extern Datum gistinsert(PG_FUNCTION_ARGS);
+extern Datum gistcanreturn(PG_FUNCTION_ARGS);
 extern MemoryContext createTempGistContext(void);
 extern GISTSTATE *initGISTstate(Relation index);
 extern void freeGISTstate(GISTSTATE *giststate);
@@ -521,6 +525,12 @@ extern void gistMakeUnionItVec(GISTSTATE *giststate, IndexTuple *itvec, int len,
 extern bool gistKeyIsEQ(GISTSTATE *giststate, int attno, Datum a, Datum b);
 extern void gistDeCompressAtt(GISTSTATE *giststate, Relation r, IndexTuple tuple, Page p,
 				  OffsetNumber o, GISTENTRY *attdata, bool *isnull);
+
+extern void gistfentryinit(GISTSTATE *giststate, int nkey,
+			   GISTENTRY *e, Datum k, Relation r,
+			   Page pg, OffsetNumber o, bool l, bool isNull);
+			   
+extern IndexTuple gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool *isnull);
 
 extern void gistMakeUnionKey(GISTSTATE *giststate, int attno,
 				 GISTENTRY *entry1, bool isnull1,

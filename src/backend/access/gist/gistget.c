@@ -240,6 +240,9 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
 	Buffer		buffer;
 	Page		page;
+	GISTSTATE *giststate = so->giststate; 
+	Relation r = scan->indexRelation;
+	bool        isnull[INDEX_MAX_KEYS];
 	GISTPageOpaque opaque;
 	OffsetNumber maxoff;
 	OffsetNumber i;
@@ -334,6 +337,10 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			 */
 			so->pageData[so->nPageData].heapPtr = it->t_tid;
 			so->pageData[so->nPageData].recheck = recheck;
+			if (scan->xs_want_itup) {
+			elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
+				so->pageData[so->nPageData].ftup = gistFetchTuple(giststate, r, it, isnull);
+			}
 			so->nPageData++;
 		}
 		else
@@ -357,6 +364,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
+				if (scan->xs_want_itup) { elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
+					item->data.ftup = gistFetchTuple(giststate, r, it, isnull); }
 			}
 			else
 			{

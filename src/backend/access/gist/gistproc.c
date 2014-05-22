@@ -152,6 +152,17 @@ gist_box_decompress(PG_FUNCTION_ARGS)
 }
 
 /*
+ * GiST Fetch method for boxes 
+ * do not do anything --- we just use the stored box as is.
+ */
+Datum
+gist_box_fetch(PG_FUNCTION_ARGS)
+{
+	//elog(NOTICE, "Debug. gistproc.c we are in gist_box_fetch");
+	PG_RETURN_POINTER(PG_GETARG_POINTER(0));
+}
+
+/*
  * The GiST Penalty method for boxes (also used for points)
  *
  * As in the R-tree paper, we use change in area as our penalty metric

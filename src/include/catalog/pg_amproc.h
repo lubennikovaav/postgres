@@ -195,6 +195,7 @@ DATA(insert (	2593   603 603 4 2580 ));
 DATA(insert (	2593   603 603 5 2581 ));
 DATA(insert (	2593   603 603 6 2582 ));
 DATA(insert (	2593   603 603 7 2584 ));
+DATA(insert (	2593   603 603 9 3252 ));
 DATA(insert (	2594   604 604 1 2585 ));
 DATA(insert (	2594   604 604 2 2583 ));
 DATA(insert (	2594   604 604 3 2586 ));

@@ -198,6 +198,19 @@ gistrescan(PG_FUNCTION_ARGS)
 
 	so->curTreeItem = NULL;
 	so->firstCall = true;
+	
+	// Check if fetchFn is defined. If gistcanreturn works correctly, this way is useless.
+	if(scan->xs_want_itup) {
+		//elog(NOTICE, "Debug. gistscan.c Check if fetchFn is defined");
+		FmgrInfo   *finfo = &(so->giststate->fetchFn[0]); 
+		if (!OidIsValid(finfo->fn_oid)) {
+			scan->xs_want_itup = false;
+			//elog(NOTICE, "Debug missing support function %d of index \"%s\"",
+					 //GIST_FETCH_PROC,
+					 //RelationGetRelationName(scan->indexRelation));
+			//elog(NOTICE, "Debug. gistscan.c fetchFn is not defined => xs_want_itup = false and indexonlysacn wouldn't work");
+		}
+	}
 
 	/* Update scan key, if a new one is given */
 	if (key && scan->numberOfKeys > 0)

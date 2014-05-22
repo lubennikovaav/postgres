@@ -618,6 +618,67 @@ gistFormTuple(GISTSTATE *giststate, Relation r,
 	return res;
 }
 
+
+/*
+ * initialize a GiST entry with fetched value in key field
+ */
+void
+gistfentryinit(GISTSTATE *giststate, int nkey,
+			   GISTENTRY *e, Datum k, Relation r,
+			   Page pg, OffsetNumber o, bool l, bool isNull)
+{
+	if (!isNull)
+	{
+		GISTENTRY  *fep;
+
+		gistentryinit(*e, k, r, pg, o, l);
+		fep = (GISTENTRY *)
+			DatumGetPointer(FunctionCall1Coll(&giststate->fetchFn[nkey],
+										   giststate->supportCollation[nkey],
+											  PointerGetDatum(e)));
+		//elog(NOTICE, "Debug. gistfentryinit()");
+		/* fecthFn returns the given pointer */
+		if (fep != e)
+			gistentryinit(*e, fep->key, fep->rel, fep->page, fep->offset,
+						  fep->leafkey);
+	}
+	else
+		gistentryinit(*e, (Datum) 0, r, pg, o, l);
+}
+
+/*
+ * Fetch all keys in tuple --TODO
+ * Now it works only for single column indexes
+ * returns new IndexTuple that contains GISTENTRY with fetched data in key field
+ */
+IndexTuple
+gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[])
+{
+	GISTENTRY	fentry[INDEX_MAX_KEYS];
+	Datum		fetchatt[INDEX_MAX_KEYS];
+	int		i;
+	IndexTuple	res;
+	
+	for (i = 0; i < 1; i++)  { // Singlecolumn
+
+		Datum datum = index_getattr(tuple, i + 1, giststate->tupdesc, &isnull[i]);
+
+		gistfentryinit(giststate, i, &fentry[i],
+					   datum, r, NULL, (OffsetNumber) 0,
+					   FALSE, FALSE);
+		fetchatt[i] = fentry[i].key;
+	}
+	//elog(NOTICE, "Debug. gistFetchTuple. Before index_form_tuple");
+	res = index_form_tuple(giststate->tupdesc, fetchatt, isnull);
+
+	/*
+	 * The offset number on tuples on internal pages is unused. For historical
+	 * reasons, it is set 0xffff.
+	 */
+	ItemPointerSetOffsetNumber(&(res->t_tid), 0xffff);
+	return res;
+}
+
 float
 gistpenalty(GISTSTATE *giststate, int attno,
 			GISTENTRY *orig, bool isNullOrig,

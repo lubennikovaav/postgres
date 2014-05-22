@@ -273,6 +273,7 @@ extern Datum box_out(PG_FUNCTION_ARGS);
 extern Datum box_recv(PG_FUNCTION_ARGS);
 extern Datum box_send(PG_FUNCTION_ARGS);
 extern Datum box_same(PG_FUNCTION_ARGS);
+extern Datum gist_box_fetch(PG_FUNCTION_ARGS); //Debug. gist_box_fetch
 extern Datum box_overlap(PG_FUNCTION_ARGS);
 extern Datum box_left(PG_FUNCTION_ARGS);
 extern Datum box_overleft(PG_FUNCTION_ARGS);
