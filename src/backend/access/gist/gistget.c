@@ -338,7 +338,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			so->pageData[so->nPageData].heapPtr = it->t_tid;
 			so->pageData[so->nPageData].recheck = recheck;
 			if (scan->xs_want_itup) {
-			elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
+			//elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
 				so->pageData[so->nPageData].ftup = gistFetchTuple(giststate, r, it, isnull);
 			}
 			so->nPageData++;
@@ -365,7 +365,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
 				if (scan->xs_want_itup) { elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
-					item->data.ftup = gistFetchTuple(giststate, r, it, isnull); }
+					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); }
 			}
 			else
 			{
