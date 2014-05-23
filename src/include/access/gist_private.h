@@ -170,9 +170,14 @@ typedef struct GISTScanOpaqueData
 	double	   *distances;		/* output area for gistindex_keytest */
 
 	/* In a non-ordered search, returnable heap items are stored here: */
-	GISTSearchHeapItem pageData[BLCKSZ / sizeof(IndexTupleData)];
-	OffsetNumber nPageData;		/* number of valid items in array */
-	OffsetNumber curPageData;	/* next item to return */
+	//GISTSearchHeapItem pageData[BLCKSZ / sizeof(IndexTupleData)];
+	//OffsetNumber nPageData;		/* number of valid items in array */
+	//OffsetNumber curPageData;	/* next item to return */
+
+	/* In index-only scans tuples are stored in ftupData */
+	List *pageData;
+	//GISTSearchHeapItem *curPageItem; 
+	ListCell *curPageData;
 } GISTScanOpaqueData;
 
 typedef GISTScanOpaqueData *GISTScanOpaque;

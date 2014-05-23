@@ -133,6 +133,14 @@ gistbeginscan(PG_FUNCTION_ARGS)
 
 	scan->opaque = so;
 
+	/* All fields required for index-only scans are null until gistrescan. 
+	 * However, we set up scan->xs_itupdesc whether we'll need it or not, 
+	 * since that's so cheap.
+	 */
+	so->pageData = NULL;
+	so->curPageData = NULL;
+	scan->xs_itupdesc = RelationGetDescr(r);
+
 	MemoryContextSwitchTo(oldCxt);
 
 	PG_RETURN_POINTER(scan);
@@ -194,10 +202,14 @@ gistrescan(PG_FUNCTION_ARGS)
 						  GISTSearchTreeItemAllocator,
 						  GISTSearchTreeItemDeleter,
 						  scan);
+
+	//so->ftupData = new_list(T_List);
 	MemoryContextSwitchTo(oldCxt);
 
 	so->curTreeItem = NULL;
 	so->firstCall = true;
+	
+	//so->curListItem = so->ftupData->tail; //Debug. ??
 	
 	// Check if fetchFn is defined. If gistcanreturn works correctly, this way is useless.
 	if(scan->xs_want_itup) {

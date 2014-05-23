@@ -243,6 +243,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 	GISTSTATE *giststate = so->giststate; 
 	Relation r = scan->indexRelation;
 	bool        isnull[INDEX_MAX_KEYS];
+	GISTSearchHeapItem *tmpListItem;
 	GISTPageOpaque opaque;
 	OffsetNumber maxoff;
 	OffsetNumber i;
@@ -291,10 +292,14 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 		(void) rb_insert(so->queue, (RBNode *) tmpItem, &isNew);
 
+		/* Create new GISTSearchHeapItem to insert into pageData*/
+
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	so->nPageData = so->curPageData = 0;
+	//so->nPageData = so->curPageData = 0;
+	so->curPageData = NULL;
+	//so->pageData = NULL;
 
 	/*
 	 * check all tuples on page
@@ -332,16 +337,33 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		}
 		else if (scan->numberOfOrderBys == 0 && GistPageIsLeaf(page))
 		{
+			/* Non-oredered scan, so tuples report in so->pageData */
+			oldcxt = MemoryContextSwitchTo(so->queueCxt);
+			elog(NOTICE, "Debug. init tmpListItem");
+			tmpListItem->heapPtr = it->t_tid;
+			tmpListItem->recheck = recheck;
+			if (scan->xs_want_itup)
+				tmpListItem->ftup = gistFetchTuple(giststate, r, it, isnull);
+			elog(NOTICE, "Debug. lappend tmpListItem into so->ftupData");
+			so->pageData = lappend(so->pageData, tmpListItem);	
+			
+			/* If it was first call of lappend() we should set so->curPageData not NULL*/
+			if(so->curPageData == NULL)
+				so->curPageData = list_head(so->pageData);
+						
 			/*
 			 * Non-ordered scan, so report heap tuples in so->pageData[]
-			 */
-			so->pageData[so->nPageData].heapPtr = it->t_tid;
-			so->pageData[so->nPageData].recheck = recheck;
+			 *
+				so->pageData[so->nPageData].heapPtr = it->t_tid;
+				so->pageData[so->nPageData].recheck = recheck;
+				so->nPageData++;
+
 			if (scan->xs_want_itup) {
 			//elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
-				so->pageData[so->nPageData].ftup = gistFetchTuple(giststate, r, it, isnull);
+				so->ftupData = lappend(so->ftupData, gistFetchTuple(giststate, r, it, isnull));
 			}
-			so->nPageData++;
+			*/
+			MemoryContextSwitchTo(oldcxt);
 		}
 		else
 		{
@@ -364,8 +386,10 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
-				if (scan->xs_want_itup) { elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
-					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); }
+				if (scan->xs_want_itup) { 
+					//elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
+					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); 
+				}
 			}
 			else
 			{
@@ -501,7 +525,7 @@ gistgettuple(PG_FUNCTION_ARGS)
 
 		so->firstCall = false;
 		so->curTreeItem = NULL;
-		so->curPageData = so->nPageData = 0;
+		//so->curPageData = so->nPageData = 0;
 
 		fakeItem.blkno = GIST_ROOT_BLKNO;
 		memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
@@ -518,15 +542,27 @@ gistgettuple(PG_FUNCTION_ARGS)
 		/* Fetch tuples index-page-at-a-time */
 		for (;;)
 		{
-			if (so->curPageData < so->nPageData)
-			{
-				/* continuing to return tuples from a leaf page */
-				scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
-				scan->xs_recheck = so->pageData[so->curPageData].recheck;
-				so->curPageData++;
-				PG_RETURN_BOOL(true);
+			if(so->curPageData!=NULL) {
+				GISTSearchHeapItem *tmp = (GISTSearchHeapItem *)lfirst(so->curPageData);
+				elog(NOTICE, "Debug. gistgettuple. read data from so->curPageData");
+				scan->xs_ctup.t_self = tmp->heapPtr;
+				scan->xs_recheck = tmp->recheck;
+				if(scan->xs_want_itup)
+					scan->xs_itup = tmp->ftup;
+				/* go to next ListCell */
+				so->curPageData = lnext(so->curPageData);
+				PG_RETURN_BOOL(TRUE);
 			}
 
+			/*if (list_length(so->pageData)>0)
+			{
+				// continuing to return tuples from a leaf page 
+				//scan->xs_ctup.t_self = so->pageData->tail.heapPtr;
+				//scan->xs_recheck = so->pageData[so->curPageData].recheck;
+				//so->curPageData++;
+				PG_RETURN_BOOL(true);
+			}
+			*/
 			/* find and process the next index page */
 			do
 			{
@@ -546,7 +582,7 @@ gistgettuple(PG_FUNCTION_ARGS)
 				gistScanPage(scan, item, so->curTreeItem->distances, NULL, NULL);
 
 				pfree(item);
-			} while (so->nPageData == 0);
+			} while (list_length(so->pageData)==0);
 		}
 	}
 }
@@ -570,7 +606,8 @@ gistgetbitmap(PG_FUNCTION_ARGS)
 
 	/* Begin the scan by processing the root page */
 	so->curTreeItem = NULL;
-	so->curPageData = so->nPageData = 0;
+	so->curPageData = NULL;
+	//so->curPageData = so->nPageData = 0;
 
 	fakeItem.blkno = GIST_ROOT_BLKNO;
 	memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
