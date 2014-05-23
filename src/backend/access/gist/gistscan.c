@@ -135,7 +135,7 @@ gistbeginscan(PG_FUNCTION_ARGS)
 
 	/* All fields required for index-only scans are null until gistrescan. 
 	 * However, we set up scan->xs_itupdesc whether we'll need it or not, 
-	 * since that's so cheap.
+	 * since that's cheap.
 	 */
 	so->pageData = NULL;
 	so->curPageData = NULL;
@@ -203,27 +203,10 @@ gistrescan(PG_FUNCTION_ARGS)
 						  GISTSearchTreeItemDeleter,
 						  scan);
 
-	//so->ftupData = new_list(T_List);
 	MemoryContextSwitchTo(oldCxt);
 
-	so->curTreeItem = NULL;
 	so->firstCall = true;
 	
-	//so->curListItem = so->ftupData->tail; //Debug. ??
-	
-	// Check if fetchFn is defined. If gistcanreturn works correctly, this way is useless.
-	if(scan->xs_want_itup) {
-		//elog(NOTICE, "Debug. gistscan.c Check if fetchFn is defined");
-		FmgrInfo   *finfo = &(so->giststate->fetchFn[0]); 
-		if (!OidIsValid(finfo->fn_oid)) {
-			scan->xs_want_itup = false;
-			//elog(NOTICE, "Debug missing support function %d of index \"%s\"",
-					 //GIST_FETCH_PROC,
-					 //RelationGetRelationName(scan->indexRelation));
-			//elog(NOTICE, "Debug. gistscan.c fetchFn is not defined => xs_want_itup = false and indexonlysacn wouldn't work");
-		}
-	}
-
 	/* Update scan key, if a new one is given */
 	if (key && scan->numberOfKeys > 0)
 	{

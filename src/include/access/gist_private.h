@@ -118,7 +118,7 @@ typedef struct GISTSearchHeapItem
 {
 	ItemPointerData heapPtr;
 	bool		recheck;		/* T if quals must be rechecked */
-	IndexTuple ftup;		/* Tuple contains datum fetched from key. For Index-only scans. ftup = fetched tuple*/
+	IndexTuple ftup;		/* Tuple contains datum fetched from key for index-only scans. ftup = fetched tuple*/
 } GISTSearchHeapItem;
 
 /* Unvisited item, either index page or heap tuple */
@@ -131,7 +131,6 @@ typedef struct GISTSearchItem
 		GistNSN		parentlsn;	/* parent page's LSN, if index page */
 		/* we must store parentlsn to detect whether a split occurred */
 		GISTSearchHeapItem heap;	/* heap info, if heap tuple */
-		//IndexTuple ftup;		/* Tuple contains datum fetched from key. For Index-only scans. ftup = fetched tuple*/
 	}			data;
 } GISTSearchItem;
 
@@ -170,14 +169,9 @@ typedef struct GISTScanOpaqueData
 	double	   *distances;		/* output area for gistindex_keytest */
 
 	/* In a non-ordered search, returnable heap items are stored here: */
-	//GISTSearchHeapItem pageData[BLCKSZ / sizeof(IndexTupleData)];
-	//OffsetNumber nPageData;		/* number of valid items in array */
-	//OffsetNumber curPageData;	/* next item to return */
-
-	/* In index-only scans tuples are stored in ftupData */
 	List *pageData;
-	//GISTSearchHeapItem *curPageItem; 
 	ListCell *curPageData;
+
 } GISTScanOpaqueData;
 
 typedef GISTScanOpaqueData *GISTScanOpaque;

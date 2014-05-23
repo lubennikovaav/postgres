@@ -297,9 +297,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	//so->nPageData = so->curPageData = 0;
 	so->curPageData = NULL;
-	//so->pageData = NULL;
 
 	/*
 	 * check all tuples on page
@@ -339,30 +337,19 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		{
 			/* Non-oredered scan, so tuples report in so->pageData */
 			oldcxt = MemoryContextSwitchTo(so->queueCxt);
-			elog(NOTICE, "Debug. init tmpListItem");
+			/* form tmpListItem and fill it with data to add into so->pageData */
+			tmpListItem = palloc(sizeof(GISTSearchHeapItem));
 			tmpListItem->heapPtr = it->t_tid;
 			tmpListItem->recheck = recheck;
 			if (scan->xs_want_itup)
 				tmpListItem->ftup = gistFetchTuple(giststate, r, it, isnull);
-			elog(NOTICE, "Debug. lappend tmpListItem into so->ftupData");
+
 			so->pageData = lappend(so->pageData, tmpListItem);	
 			
-			/* If it was first call of lappend() we should set so->curPageData not NULL*/
+			/* If it's first call of lappend() we should set so->curPageData not NULL*/
 			if(so->curPageData == NULL)
 				so->curPageData = list_head(so->pageData);
-						
-			/*
-			 * Non-ordered scan, so report heap tuples in so->pageData[]
-			 *
-				so->pageData[so->nPageData].heapPtr = it->t_tid;
-				so->pageData[so->nPageData].recheck = recheck;
-				so->nPageData++;
-
-			if (scan->xs_want_itup) {
-			//elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
-				so->ftupData = lappend(so->ftupData, gistFetchTuple(giststate, r, it, isnull));
-			}
-			*/
+			
 			MemoryContextSwitchTo(oldcxt);
 		}
 		else
@@ -386,10 +373,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
-				if (scan->xs_want_itup) { 
-					//elog(NOTICE, "Debug. xs_want_itup => do gistFetchTuple");
+				if (scan->xs_want_itup)
 					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); 
-				}
 			}
 			else
 			{
@@ -484,6 +469,8 @@ getNextNearest(IndexScanDesc scan)
 			/* found a heap item at currently minimal distance */
 			scan->xs_ctup.t_self = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
+			if(scan->xs_want_itup)	
+				scan->xs_itup = item->data.heap.ftup;
 			res = true;
 		}
 		else
@@ -525,7 +512,8 @@ gistgettuple(PG_FUNCTION_ARGS)
 
 		so->firstCall = false;
 		so->curTreeItem = NULL;
-		//so->curPageData = so->nPageData = 0;
+
+		so->curPageData = NULL;
 
 		fakeItem.blkno = GIST_ROOT_BLKNO;
 		memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
@@ -544,25 +532,21 @@ gistgettuple(PG_FUNCTION_ARGS)
 		{
 			if(so->curPageData!=NULL) {
 				GISTSearchHeapItem *tmp = (GISTSearchHeapItem *)lfirst(so->curPageData);
-				elog(NOTICE, "Debug. gistgettuple. read data from so->curPageData");
 				scan->xs_ctup.t_self = tmp->heapPtr;
 				scan->xs_recheck = tmp->recheck;
 				if(scan->xs_want_itup)
 					scan->xs_itup = tmp->ftup;
+
+				ListCell *tmpPageData = so->curPageData;
 				/* go to next ListCell */
 				so->curPageData = lnext(so->curPageData);
+				/* Delete ListCell that we have already read.
+				 * It's always head of so->pageData
+				 */
+				so->pageData =  list_delete_cell(so->pageData, tmpPageData, NULL);
 				PG_RETURN_BOOL(TRUE);
 			}
 
-			/*if (list_length(so->pageData)>0)
-			{
-				// continuing to return tuples from a leaf page 
-				//scan->xs_ctup.t_self = so->pageData->tail.heapPtr;
-				//scan->xs_recheck = so->pageData[so->curPageData].recheck;
-				//so->curPageData++;
-				PG_RETURN_BOOL(true);
-			}
-			*/
 			/* find and process the next index page */
 			do
 			{
