@@ -722,11 +722,11 @@ index_vacuum_cleanup(IndexVacuumInfo *info,
 }
 
 /* ----------------
- *		index_can_return - does index support index-only scans?
+ *		index_can_return - does index column support index-only scans?
  * ----------------
  */
 bool
-index_can_return(Relation indexRelation)
+index_can_return(Relation indexRelation, int attno)
 {
 	FmgrInfo   *procedure;
 
@@ -738,8 +738,9 @@ index_can_return(Relation indexRelation)
 
 	GET_REL_PROCEDURE(amcanreturn);
 
-	return DatumGetBool(FunctionCall1(procedure,
-									  PointerGetDatum(indexRelation)));
+	return DatumGetBool(FunctionCall2(procedure,
+					  PointerGetDatum(indexRelation),
+					  Int64GetDatum(attno)));
 }
 
 /* ----------------

@@ -1380,19 +1380,15 @@ initGISTstate(Relation index)
 			giststate->distanceFn[i].fn_oid = InvalidOid;
 
 		/* opclasses are not required to provide a Fetch method */
-		if (i<1)			//for Debugging. Singlecolumn index
-		{
 			//elog(NOTICE, "Debug. gist.c amsupport = %d", index->rd_am->amsupport);
 			//elog(NOTICE, "Debug. gist.c OidIsValid. fetch. rd_support(%d) = %d", GIST_FETCH_PROC, index->rd_support[GIST_FETCH_PROC-1]);
-			if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC))) {
-				fmgr_info_copy(&(giststate->fetchFn[i]),
-							 index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
-							   scanCxt);
-			}
-			else {
-				giststate->fetchFn[i].fn_oid = InvalidOid;
-			}
+		if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC))) {
+			fmgr_info_copy(&(giststate->fetchFn[i]),
+						 index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
+						   scanCxt);
 		}
+		else
+			giststate->fetchFn[i].fn_oid = InvalidOid;
 
 		/*
 		 * If the index column has a specified collation, we should honor that
@@ -1418,32 +1414,21 @@ initGISTstate(Relation index)
 
 Datum 
 gistcanreturn(PG_FUNCTION_ARGS) {
-	int i;
 	Relation index = (Relation) PG_GETARG_POINTER(0);
+	int i = (int) PG_GETARG_POINTER(1);
 	
-	for (i = 0; i < 1; i++) { //Singlecolumn
-
-	//elog(NOTICE, "Debug. gist.c gistcanreturn. decompress. rd_support(%d) = %d", GIST_DECOMPRESS_PROC, index->rd_support[GIST_DECOMPRESS_PROC]);
-	//elog(NOTICE, "Debug. gist.c gistcanreturn. distance. rd_support(%d) = %d", GIST_DISTANCE_PROC, index->rd_support[GIST_DISTANCE_PROC]);
-	//elog(NOTICE, "Debug. gist.c gistcanreturn. fetch. rd_support(%d) = %d", GIST_FETCH_PROC, index->rd_support[GIST_FETCH_PROC]);
-	
-	//Debug. singlecolumn index ==> second argument = ???
-		//elog(NOTICE, "Debug. gist.c gistcanreturn. GIST_FETCH_PROC = %d", OidIsValid(index_getprocid(index, 0, GIST_FETCH_PROC)));
-		if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC))) {
-			//elog(NOTICE, "Debug. gist.c gistcanreturn. True");
-			PG_RETURN_BOOL(true);
-		}
-		else {
-			//elog(NOTICE, "Debug. gist.c gistcanreturn. False");
-			//elog(NOTICE, " Debug. missing support function %d of index \"%s\"",
-						// GIST_FETCH_PROC,
-						 //RelationGetRelationName(index));
-			 PG_RETURN_BOOL(false);
-			
-		}
+	//elog(NOTICE, "Debug. gist.c gistcanreturn. GIST_FETCH_PROC = %d", OidIsValid(index_getprocid(index, 0, GIST_FETCH_PROC)));
+	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC))) {
+		//elog(NOTICE, "Debug. gist.c gistcanreturn. True");
+		PG_RETURN_BOOL(true);
 	}
-	//elog(NOTICE, "Debug. gist.c gistcanreturn. False. Multicolumn");
-	PG_RETURN_BOOL(false);
+	else {
+		//elog(NOTICE, "Debug. gist.c gistcanreturn. False");
+		//elog(NOTICE, " Debug. missing support function %d of index \"%s\"",
+					// GIST_FETCH_PROC,
+					 //RelationGetRelationName(index));
+		 PG_RETURN_BOOL(false);
+	}
 }
 
 void

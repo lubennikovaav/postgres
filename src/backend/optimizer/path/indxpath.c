@@ -1746,13 +1746,12 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	bool		result;
 	Bitmapset  *attrs_used = NULL;
 	Bitmapset  *index_attrs = NULL;
+	Bitmapset  *index_only_attrs = NULL;
 	ListCell   *lc;
 	int			i;
 
 	/* Index-only scans must be enabled, and index must be capable of them */
 	if (!enable_indexonlyscan)
-		return false;
-	if (!index->canreturn)
 		return false;
 
 	/*
@@ -1798,13 +1797,19 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 		index_attrs =
 			bms_add_member(index_attrs,
 						   attno - FirstLowInvalidHeapAttributeNumber);
+
+		if (index->canreturn[i])
+			index_only_attrs = bms_add_member(index_only_attrs,
+						   attno - FirstLowInvalidHeapAttributeNumber);
 	}
 
 	/* Do we have all the necessary attributes? */
-	result = bms_is_subset(attrs_used, index_attrs);
+	result = ((bms_is_subset(attrs_used, index_attrs))&&
+			(bms_is_subset(attrs_used, index_only_attrs)));
 
 	bms_free(attrs_used);
 	bms_free(index_attrs);
+	bms_free(index_only_attrs);
 
 	return result;
 }
