@@ -659,7 +659,7 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[]
 	int		i;
 	IndexTuple	res;
 	
-	for (i = 0; i < 1; i++)  { // Singlecolumn
+	for (i = 0; i < r->rd_att->natts; i++)  { // Singlecolumn
 
 		Datum datum = index_getattr(tuple, i + 1, giststate->tupdesc, &isnull[i]);
 
@@ -668,7 +668,7 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[]
 					   FALSE, FALSE);
 		fetchatt[i] = fentry[i].key;
 	}
-	//elog(NOTICE, "Debug. gistFetchTuple. Before index_form_tuple");
+	elog(NOTICE, "Debug. gistFetchTuple. Before index_form_tuple");
 	res = index_form_tuple(giststate->tupdesc, fetchatt, isnull);
 
 	/*

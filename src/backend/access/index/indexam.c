@@ -740,7 +740,7 @@ index_can_return(Relation indexRelation, int attno)
 
 	return DatumGetBool(FunctionCall2(procedure,
 					  PointerGetDatum(indexRelation),
-					  Int64GetDatum(attno)));
+					  Int32GetDatum(attno)));
 }
 
 /* ----------------
