@@ -647,8 +647,7 @@ gistfentryinit(GISTSTATE *giststate, int nkey,
 }
 
 /*
- * Fetch all keys in tuple --TODO
- * Now it works only for single column indexes
+ * Fetch all keys in tuple.
  * returns new IndexTuple that contains GISTENTRY with fetched data in key field
  */
 IndexTuple
@@ -659,7 +658,7 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[]
 	int		i;
 	IndexTuple	res;
 	
-	for (i = 0; i < r->rd_att->natts; i++)  { // Singlecolumn
+	for (i = 0; i < r->rd_att->natts; i++)  { 
 
 		Datum datum = index_getattr(tuple, i + 1, giststate->tupdesc, &isnull[i]);
 
@@ -668,7 +667,6 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[]
 					   FALSE, FALSE);
 		fetchatt[i] = fentry[i].key;
 	}
-	elog(NOTICE, "Debug. gistFetchTuple. Before index_form_tuple");
 	res = index_form_tuple(giststate->tupdesc, fetchatt, isnull);
 
 	/*

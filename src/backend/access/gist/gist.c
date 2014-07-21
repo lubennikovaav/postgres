@@ -1382,7 +1382,7 @@ initGISTstate(Relation index)
 		/* opclasses are not required to provide a Fetch method */
 			//elog(NOTICE, "Debug. gist.c amsupport = %d", index->rd_am->amsupport);
 		if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC))) {
-			//elog(NOTICE, "Debug. gist.c OidIsValid. i=%d fetch. rd_support(%d) = %d", i, GIST_FETCH_PROC, index->rd_support[GIST_FETCH_PROC-1]);
+			//elog(NOTICE, "Debug. gist.c OidIsValid. i=%d fetch. rd_support(%d) = %d", i, GIST_FETCH_PROC, 													//index_getprocid(index, i + 1, GIST_FETCH_PROC));
 			fmgr_info_copy(&(giststate->fetchFn[i]),
 						 index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
 						   scanCxt);
@@ -1415,19 +1415,15 @@ initGISTstate(Relation index)
 Datum 
 gistcanreturn(PG_FUNCTION_ARGS) {
 	Relation index = (Relation) PG_GETARG_POINTER(0);
-	int i = 0;
-	i = PG_GETARG_INT32(1);
+	int i = PG_GETARG_INT32(1);
 	
-	elog(NOTICE, "Debug. gist.c gistcanreturn. i = %d", i);
 	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC))) {
-		elog(NOTICE, "Debug. gist.c gistcanreturn. True");
 		PG_RETURN_BOOL(true);
 	}
 	else {
-		elog(NOTICE, "Debug. gist.c gistcanreturn. False");
 		//elog(NOTICE, " Debug. missing support function %d of index \"%s\"",
-					// GIST_FETCH_PROC,
-					 //RelationGetRelationName(index));
+		//			GIST_FETCH_PROC,
+		//			RelationGetRelationName(index));
 		 PG_RETURN_BOOL(false);
 	}
 }

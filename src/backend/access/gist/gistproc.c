@@ -1153,6 +1153,40 @@ gist_circle_compress(PG_FUNCTION_ARGS)
 }
 
 /*
+ * GiST Fetch method for circle 
+ * get circle coordinates from it's bounding box coordinates
+ */
+Datum
+gist_circle_fetch(PG_FUNCTION_ARGS)
+{
+	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+	GISTENTRY  *retval;
+		retval = palloc(sizeof(GISTENTRY));
+		if (DatumGetCircleP(entry->key) != NULL)
+		{
+			BOX	   *in = DatumGetBoxP(entry->key);
+			CIRCLE		   *r;
+
+			r = (CIRCLE *) palloc(sizeof(CIRCLE));
+			r->radius = (in->high.x - in->low.x)/2;
+			r->center.x = (in->high.x + in->low.x)/2;
+			r->center.y = (in->high.y + in->low.y)/2;
+			gistentryinit(*retval, PointerGetDatum(r),
+						  entry->rel, entry->page,
+						  entry->offset, FALSE);
+
+		}
+		else
+		{
+			gistentryinit(*retval, (Datum) 0,
+						  entry->rel, entry->page,
+						  entry->offset, FALSE);
+		}
+	PG_RETURN_POINTER(retval);
+}
+
+
+/*
  * The GiST Consistent method for circles
  */
 Datum

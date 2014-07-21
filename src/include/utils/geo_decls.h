@@ -368,6 +368,7 @@ extern Datum circle_out(PG_FUNCTION_ARGS);
 extern Datum circle_recv(PG_FUNCTION_ARGS);
 extern Datum circle_send(PG_FUNCTION_ARGS);
 extern Datum circle_same(PG_FUNCTION_ARGS);
+extern Datum gist_circle_fetch(PG_FUNCTION_ARGS);
 extern Datum circle_overlap(PG_FUNCTION_ARGS);
 extern Datum circle_overleft(PG_FUNCTION_ARGS);
 extern Datum circle_left(PG_FUNCTION_ARGS);

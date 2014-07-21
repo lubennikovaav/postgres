@@ -216,7 +216,6 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->opfamily[i] = indexRelation->rd_opfamily[i];
 				info->opcintype[i] = indexRelation->rd_opcintype[i];
 				info->canreturn[i] = index_can_return(indexRelation, i);
-				//elog(NOTICE, "Debug. plancat.c get_relation_info. info->canreturn[%d] = %d", i, info->canreturn[i]);
 			}
 
 			info->relam = indexRelation->rd_rel->relam;
