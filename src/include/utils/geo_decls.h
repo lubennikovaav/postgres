@@ -273,7 +273,7 @@ extern Datum box_out(PG_FUNCTION_ARGS);
 extern Datum box_recv(PG_FUNCTION_ARGS);
 extern Datum box_send(PG_FUNCTION_ARGS);
 extern Datum box_same(PG_FUNCTION_ARGS);
-extern Datum gist_box_fetch(PG_FUNCTION_ARGS); //Debug. gist_box_fetch
+extern Datum gist_box_fetch(PG_FUNCTION_ARGS);
 extern Datum box_overlap(PG_FUNCTION_ARGS);
 extern Datum box_left(PG_FUNCTION_ARGS);
 extern Datum box_overleft(PG_FUNCTION_ARGS);
@@ -368,7 +368,6 @@ extern Datum circle_out(PG_FUNCTION_ARGS);
 extern Datum circle_recv(PG_FUNCTION_ARGS);
 extern Datum circle_send(PG_FUNCTION_ARGS);
 extern Datum circle_same(PG_FUNCTION_ARGS);
-extern Datum gist_circle_fetch(PG_FUNCTION_ARGS);
 extern Datum circle_overlap(PG_FUNCTION_ARGS);
 extern Datum circle_overleft(PG_FUNCTION_ARGS);
 extern Datum circle_left(PG_FUNCTION_ARGS);
@@ -417,9 +416,12 @@ extern Datum gist_poly_compress(PG_FUNCTION_ARGS);
 extern Datum gist_poly_consistent(PG_FUNCTION_ARGS);
 extern Datum gist_circle_compress(PG_FUNCTION_ARGS);
 extern Datum gist_circle_consistent(PG_FUNCTION_ARGS);
+extern Datum gist_circle_fetch(PG_FUNCTION_ARGS);
 extern Datum gist_point_compress(PG_FUNCTION_ARGS);
 extern Datum gist_point_consistent(PG_FUNCTION_ARGS);
 extern Datum gist_point_distance(PG_FUNCTION_ARGS);
+extern Datum gist_point_fetch(PG_FUNCTION_ARGS);
+
 
 /* geo_selfuncs.c */
 extern Datum areasel(PG_FUNCTION_ARGS);
