@@ -118,7 +118,7 @@ typedef struct GISTSearchHeapItem
 {
 	ItemPointerData heapPtr;
 	bool		recheck;		/* T if quals must be rechecked */
-	IndexTuple ftup;		/* Tuple contains datum fetched from key for index-only scans. ftup = fetched tuple*/
+	IndexTuple ftup;		/* Tuple contains datum fetched from key for index-only scans */
 } GISTSearchHeapItem;
 
 /* Unvisited item, either index page or heap tuple */

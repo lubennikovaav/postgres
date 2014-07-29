@@ -202,11 +202,10 @@ gistrescan(PG_FUNCTION_ARGS)
 						  GISTSearchTreeItemAllocator,
 						  GISTSearchTreeItemDeleter,
 						  scan);
-
 	MemoryContextSwitchTo(oldCxt);
 
 	so->firstCall = true;
-	
+
 	/* Update scan key, if a new one is given */
 	if (key && scan->numberOfKeys > 0)
 	{

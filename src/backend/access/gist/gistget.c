@@ -341,6 +341,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			tmpListItem = palloc(sizeof(GISTSearchHeapItem));
 			tmpListItem->heapPtr = it->t_tid;
 			tmpListItem->recheck = recheck;
+			
+			/* If index-only scan is possible fill the slot with data fetched from index field*/
 			if (scan->xs_want_itup)
 				tmpListItem->ftup = gistFetchTuple(giststate, r, it, isnull);
 
@@ -373,6 +375,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
+				/* If index-only scan is possible fill the slot with data fetched from index field*/
 				if (scan->xs_want_itup)
 					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); 
 			}
@@ -469,6 +472,7 @@ getNextNearest(IndexScanDesc scan)
 			/* found a heap item at currently minimal distance */
 			scan->xs_ctup.t_self = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
+			/* If index-only scan is possible fill the slot with data fetched from index field*/
 			if(scan->xs_want_itup)	
 				scan->xs_itup = item->data.heap.ftup;
 			res = true;
@@ -534,6 +538,7 @@ gistgettuple(PG_FUNCTION_ARGS)
 				GISTSearchHeapItem *tmp = (GISTSearchHeapItem *)lfirst(so->curPageData);
 				scan->xs_ctup.t_self = tmp->heapPtr;
 				scan->xs_recheck = tmp->recheck;
+				/* If index-only scan is possible return fetched data*/
 				if(scan->xs_want_itup)
 					scan->xs_itup = tmp->ftup;
 

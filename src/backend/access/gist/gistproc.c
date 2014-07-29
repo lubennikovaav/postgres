@@ -1152,42 +1152,6 @@ gist_circle_compress(PG_FUNCTION_ARGS)
 }
 
 /*
- * GiST Fetch method for circle 
- * get circle coordinates from it's bounding box coordinates.
- * TODO Fix problems with rounding or drop this functionality at all.
- */
-/*
-Datum
-gist_circle_fetch(PG_FUNCTION_ARGS)
-{
-	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	GISTENTRY  *retval;
-		retval = palloc(sizeof(GISTENTRY));
-		if (DatumGetBox(entry->key) != NULL)
-		{
-			BOX	   *in = DatumGetBoxP(entry->key);
-			CIRCLE		   *r;
-
-			r = (CIRCLE *) palloc(sizeof(CIRCLE));
-			r->radius = (in->high.x - in->low.x)/2;
-			r->center.x = (in->high.x + in->low.x)/2;
-			r->center.y = (in->high.y + in->low.y)/2;
-			gistentryinit(*retval, PointerGetDatum(r),
-						  entry->rel, entry->page,
-						  entry->offset, FALSE);
-
-		}
-		else
-		{
-			gistentryinit(*retval, (Datum) 0,
-						  entry->rel, entry->page,
-						  entry->offset, FALSE);
-		}
-	PG_RETURN_POINTER(retval);
-}
-*/
-
-/*
  * The GiST Consistent method for circles
  */
 Datum
@@ -1252,7 +1216,8 @@ gist_point_compress(PG_FUNCTION_ARGS)
 
 /*
  * GiST Fetch method for point 
- * get point coordinates from compressed bounding box coordinates
+ * get point coordinates from it's bounding box coordinates
+ * and form new gistentry
  */
 Datum
 gist_point_fetch(PG_FUNCTION_ARGS)
@@ -1262,8 +1227,8 @@ gist_point_fetch(PG_FUNCTION_ARGS)
 		retval = palloc(sizeof(GISTENTRY));
 		if (DatumGetBoxP(entry->key) != NULL)
 		{
-			BOX	   *in = DatumGetBoxP(entry->key);
-			Point		   *r;
+			BOX	*in = DatumGetBoxP(entry->key);
+			Point	*r;
 
 			r = (Point *) palloc(sizeof(Point));
 			r->x = in->high.x;

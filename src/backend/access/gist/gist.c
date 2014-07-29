@@ -1380,13 +1380,10 @@ initGISTstate(Relation index)
 			giststate->distanceFn[i].fn_oid = InvalidOid;
 
 		/* opclasses are not required to provide a Fetch method */
-			//elog(NOTICE, "Debug. gist.c amsupport = %d", index->rd_am->amsupport);
-		if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC))) {
-			//elog(NOTICE, "Debug. gist.c OidIsValid. i=%d fetch. rd_support(%d) = %d", i, GIST_FETCH_PROC, 													//index_getprocid(index, i + 1, GIST_FETCH_PROC));
+		if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC)))
 			fmgr_info_copy(&(giststate->fetchFn[i]),
 						 index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
 						   scanCxt);
-		}
 		else
 			giststate->fetchFn[i].fn_oid = InvalidOid;
 
@@ -1412,20 +1409,21 @@ initGISTstate(Relation index)
 	return giststate;
 }
 
+/*
+ * Gistcanreturn is supposed to be true if ANY FetchFn method is defined.
+ * If FetchFn exists it would be used in index-only scan
+ * Thus the responsibility rests with the opclass developer.
+ */
+
 Datum 
 gistcanreturn(PG_FUNCTION_ARGS) {
 	Relation index = (Relation) PG_GETARG_POINTER(0);
 	int i = PG_GETARG_INT32(1);
 	
-	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC))) {
+	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC)))
 		PG_RETURN_BOOL(true);
-	}
-	else {
-		//elog(NOTICE, " Debug. missing support function %d of index \"%s\"",
-		//			GIST_FETCH_PROC,
-		//			RelationGetRelationName(index));
-		 PG_RETURN_BOOL(false);
-	}
+	else
+		PG_RETURN_BOOL(false);
 }
 
 void

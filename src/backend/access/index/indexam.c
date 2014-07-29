@@ -722,7 +722,7 @@ index_vacuum_cleanup(IndexVacuumInfo *info,
 }
 
 /* ----------------
- *		index_can_return - does index column support index-only scans?
+ *		index_can_return - does index column with number 'attno' supports index-only scans?
  * ----------------
  */
 bool

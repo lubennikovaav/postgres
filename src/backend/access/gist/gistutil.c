@@ -636,7 +636,6 @@ gistfentryinit(GISTSTATE *giststate, int nkey,
 			DatumGetPointer(FunctionCall1Coll(&giststate->fetchFn[nkey],
 										   giststate->supportCollation[nkey],
 											  PointerGetDatum(e)));
-		//elog(NOTICE, "Debug. gistfentryinit()");
 		/* fecthFn returns the given pointer */
 		if (fep != e)
 			gistentryinit(*e, fep->key, fep->rel, fep->page, fep->offset,

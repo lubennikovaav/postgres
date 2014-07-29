@@ -1750,7 +1750,7 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	ListCell   *lc;
 	int			i;
 
-	/* Index-only scans must be enabled, and index must be capable of them */
+	/* Index-only scans must be enabled */
 	if (!enable_indexonlyscan)
 		return false;
 
@@ -1797,16 +1797,14 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 		index_attrs =
 			bms_add_member(index_attrs,
 						   attno - FirstLowInvalidHeapAttributeNumber);
-
 		if (index->canreturn[i])
 			index_only_attrs = bms_add_member(index_only_attrs,
 						   attno - FirstLowInvalidHeapAttributeNumber);
 	}
 
-	/* Do we have all the necessary attributes? */
+	/* Do we have all the necessary attributes? And do all of them support index-only scan? */
 	result = ((bms_is_subset(attrs_used, index_attrs))&&
 			(bms_is_subset(attrs_used, index_only_attrs)));
-
 	bms_free(attrs_used);
 	bms_free(index_attrs);
 	bms_free(index_only_attrs);
