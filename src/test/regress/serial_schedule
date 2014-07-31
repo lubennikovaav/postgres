@@ -91,6 +91,7 @@ test: portals
 test: arrays
 test: btree_index
 test: hash_index
+test: gist_indexonly
 test: update
 test: delete
 test: namespace
