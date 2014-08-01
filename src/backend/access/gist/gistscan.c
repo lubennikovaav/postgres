@@ -133,8 +133,8 @@ gistbeginscan(PG_FUNCTION_ARGS)
 
 	scan->opaque = so;
 
-	/* All fields required for index-only scans are null until gistrescan. 
-	 * However, we set up scan->xs_itupdesc whether we'll need it or not, 
+	/* All fields required for index-only scans are null until gistrescan.
+	 * However, we set up scan->xs_itupdesc whether we'll need it or not,
 	 * since that's cheap.
 	 */
 	so->pageData = NULL;
@@ -204,6 +204,7 @@ gistrescan(PG_FUNCTION_ARGS)
 						  scan);
 	MemoryContextSwitchTo(oldCxt);
 
+	so->curTreeItem = NULL;
 	so->firstCall = true;
 
 	/* Update scan key, if a new one is given */

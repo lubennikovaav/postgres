@@ -1415,11 +1415,10 @@ initGISTstate(Relation index)
  * Thus the responsibility rests with the opclass developer.
  */
 
-Datum 
+Datum
 gistcanreturn(PG_FUNCTION_ARGS) {
 	Relation index = (Relation) PG_GETARG_POINTER(0);
 	int i = PG_GETARG_INT32(1);
-	
 	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC)))
 		PG_RETURN_BOOL(true);
 	else

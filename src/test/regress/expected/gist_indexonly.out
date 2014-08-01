@@ -37,11 +37,11 @@ DROP INDEX gist_tbl_box_index;
 CREATE INDEX gist_tbl_multi_index ON gist_tbl USING gist (b, p);
 EXPLAIN (COSTS OFF)
 select * from gist_tbl where ( (b <@ box(point(5,5),  point(6,6))) and (p <@ box(point(0,0),  point(100,100)))) limit 10;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Limit
    ->  Index Only Scan using gist_tbl_multi_index on gist_tbl
-         Index Cond: ((b <@ '(6,6),(5,5)'::box) and (p <@ '(100,100),(0,0)'::box))
+         Index Cond: ((b <@ '(6,6),(5,5)'::box) AND (p <@ '(100,100),(0,0)'::box))
 (3 rows)
 
 EXPLAIN (COSTS OFF)
@@ -49,8 +49,8 @@ select * from gist_tbl where ( (b <@ box(point(5,5),  point(6,6))) or (p <@ box(
                                   QUERY PLAN                                  
 ------------------------------------------------------------------------------
  Limit
-   ->  Index Only Scan using gist_tbl_multi_index on gist_tbl
-         Index Cond: ((b <@ '(6,6),(5,5)'::box) or (p <@ '(100,100),(0,0)'::box))
+   ->  Seq Scan on gist_tbl
+         Filter: ((b <@ '(6,6),(5,5)'::box) OR (p <@ '(100,100),(0,0)'::box))
 (3 rows)
 
 DROP INDEX gist_tbl_multi_index;

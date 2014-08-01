@@ -226,8 +226,10 @@ gistindex_keytest(IndexScanDesc scan,
  * If tbm/ntids aren't NULL, we are doing an amgetbitmap scan, and heap
  * tuples should be reported directly into the bitmap.  If they are NULL,
  * we're doing a plain or ordered indexscan.  For a plain indexscan, heap
- * tuple TIDs are returned into so->pageData[].  For an ordered indexscan,
+ * tuple TIDs are returned into so->pageData. For an ordered indexscan,
  * heap tuple TIDs are pushed into individual search queue items.
+ * If index-only scan is possible, heap tuples themselves are returned
+ * into so->pageData or into search queue.
  *
  * If we detect that the index page has split since we saw its downlink
  * in the parent, we push its new right sibling onto the queue so the
@@ -240,7 +242,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
 	Buffer		buffer;
 	Page		page;
-	GISTSTATE *giststate = so->giststate; 
+	GISTSTATE *giststate = so->giststate;
 	Relation r = scan->indexRelation;
 	bool        isnull[INDEX_MAX_KEYS];
 	GISTSearchHeapItem *tmpListItem;
@@ -335,23 +337,26 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		}
 		else if (scan->numberOfOrderBys == 0 && GistPageIsLeaf(page))
 		{
-			/* Non-oredered scan, so tuples report in so->pageData */
+			/*
+			 * Non-oredered scan, so tuples report in so->pageData
+			 */
 			oldcxt = MemoryContextSwitchTo(so->queueCxt);
 			/* form tmpListItem and fill it with data to add into so->pageData */
 			tmpListItem = palloc(sizeof(GISTSearchHeapItem));
 			tmpListItem->heapPtr = it->t_tid;
 			tmpListItem->recheck = recheck;
-			
-			/* If index-only scan is possible fill the slot with data fetched from index field*/
+			/*
+			 * If index-only scan is possible fill the slot with data fetched from index field
+			 */
 			if (scan->xs_want_itup)
 				tmpListItem->ftup = gistFetchTuple(giststate, r, it, isnull);
 
-			so->pageData = lappend(so->pageData, tmpListItem);	
-			
-			/* If it's first call of lappend() we should set so->curPageData not NULL*/
+			so->pageData = lappend(so->pageData, tmpListItem);
+			/*
+			 * If it's first call of lappend() we should set so->curPageData not NULL
+			 */
 			if(so->curPageData == NULL)
 				so->curPageData = list_head(so->pageData);
-			
 			MemoryContextSwitchTo(oldcxt);
 		}
 		else
@@ -375,9 +380,11 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 				item->blkno = InvalidBlockNumber;
 				item->data.heap.heapPtr = it->t_tid;
 				item->data.heap.recheck = recheck;
-				/* If index-only scan is possible fill the slot with data fetched from index field*/
+				/*
+				 * If index-only scan is possible fill the slot with data fetched from index field
+				 */
 				if (scan->xs_want_itup)
-					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull); 
+					item->data.heap.ftup = gistFetchTuple(giststate, r, it, isnull);
 			}
 			else
 			{
@@ -472,8 +479,10 @@ getNextNearest(IndexScanDesc scan)
 			/* found a heap item at currently minimal distance */
 			scan->xs_ctup.t_self = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
-			/* If index-only scan is possible fill the slot with data fetched from index field*/
-			if(scan->xs_want_itup)	
+			/*
+			 * If index-only scan is possible fill the slot with data fetched from index field
+			 */
+			if(scan->xs_want_itup)
 				scan->xs_itup = item->data.heap.ftup;
 			res = true;
 		}
@@ -534,18 +543,21 @@ gistgettuple(PG_FUNCTION_ARGS)
 		/* Fetch tuples index-page-at-a-time */
 		for (;;)
 		{
-			if(so->curPageData!=NULL) {
+			if(so->curPageData!=NULL)
+			{
+				/* continuing to return tuples from a leaf page */
 				GISTSearchHeapItem *tmp = (GISTSearchHeapItem *)lfirst(so->curPageData);
 				scan->xs_ctup.t_self = tmp->heapPtr;
 				scan->xs_recheck = tmp->recheck;
-				/* If index-only scan is possible return fetched data*/
+				/* If index-only scan is possible, return fetched data*/
 				if(scan->xs_want_itup)
 					scan->xs_itup = tmp->ftup;
 
 				ListCell *tmpPageData = so->curPageData;
-				/* go to next ListCell */
+				/* Go to the next ListCell */
 				so->curPageData = lnext(so->curPageData);
-				/* Delete ListCell that we have already read.
+				/*
+				 * Delete ListCell that we have already read.
 				 * It's always head of so->pageData
 				 */
 				so->pageData =  list_delete_cell(so->pageData, tmpPageData, NULL);
@@ -596,7 +608,6 @@ gistgetbitmap(PG_FUNCTION_ARGS)
 	/* Begin the scan by processing the root page */
 	so->curTreeItem = NULL;
 	so->curPageData = NULL;
-	//so->curPageData = so->nPageData = 0;
 
 	fakeItem.blkno = GIST_ROOT_BLKNO;
 	memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));

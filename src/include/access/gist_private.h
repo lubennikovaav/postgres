@@ -109,7 +109,7 @@ typedef struct GISTSTATE
  * In a non-ordered search (no order-by operators), the RBTree degenerates
  * to a single item, which we use as a queue of unvisited index pages only.
  * In this case matched heap items from the current index leaf page are
- * remembered in GISTScanOpaqueData.pageData[] and returned directly from
+ * remembered in GISTScanOpaqueData.pageData and returned directly from
  * there, instead of building a separate GISTSearchItem for each one.
  */
 
@@ -170,7 +170,7 @@ typedef struct GISTScanOpaqueData
 
 	/* In a non-ordered search, returnable heap items are stored here: */
 	List *pageData;
-	ListCell *curPageData;
+	ListCell *curPageData; /* next item to return from pageData */
 
 } GISTScanOpaqueData;
 
@@ -528,7 +528,6 @@ extern void gistDeCompressAtt(GISTSTATE *giststate, Relation r, IndexTuple tuple
 extern void gistfentryinit(GISTSTATE *giststate, int nkey,
 			   GISTENTRY *e, Datum k, Relation r,
 			   Page pg, OffsetNumber o, bool l, bool isNull);
-			   
 extern IndexTuple gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool *isnull);
 
 extern void gistMakeUnionKey(GISTSTATE *giststate, int attno,

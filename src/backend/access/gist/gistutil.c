@@ -656,9 +656,8 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple, bool isnull[]
 	Datum		fetchatt[INDEX_MAX_KEYS];
 	int		i;
 	IndexTuple	res;
-	
-	for (i = 0; i < r->rd_att->natts; i++)  { 
-
+	for (i = 0; i < r->rd_att->natts; i++)
+	{
 		Datum datum = index_getattr(tuple, i + 1, giststate->tupdesc, &isnull[i]);
 
 		gistfentryinit(giststate, i, &fentry[i],

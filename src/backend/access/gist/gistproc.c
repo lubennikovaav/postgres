@@ -152,7 +152,7 @@ gist_box_decompress(PG_FUNCTION_ARGS)
 }
 
 /*
- * GiST Fetch method for boxes 
+ * GiST Fetch method for boxes
  * do not do anything --- we just use the stored box as is.
  */
 Datum
@@ -1215,7 +1215,7 @@ gist_point_compress(PG_FUNCTION_ARGS)
 }
 
 /*
- * GiST Fetch method for point 
+ * GiST Fetch method for point
  * get point coordinates from it's bounding box coordinates
  * and form new gistentry
  */

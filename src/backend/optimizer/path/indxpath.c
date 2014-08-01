@@ -981,7 +981,6 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	index_only_scan = (scantype != ST_BITMAPSCAN &&
 					   check_index_only(rel, index));
-	elog(NOTICE, "index_only_scan = %d", index_only_scan);
 
 	/*
 	 * 4. Generate an indexscan path if there are relevant restriction clauses
@@ -1801,7 +1800,6 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 		if (index->canreturn[i])
 			index_only_attrs = bms_add_member(index_only_attrs,
 						   attno - FirstLowInvalidHeapAttributeNumber);
-		elog(NOTICE, "i = %d", i);
 	}
 
 	/* Do we have all the necessary attributes? And do all of them support index-only scan? */
@@ -1810,7 +1808,6 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	bms_free(attrs_used);
 	bms_free(index_attrs);
 	bms_free(index_only_attrs);
-	elog(NOTICE, "result = %d", result);
 	return result;
 }
 
