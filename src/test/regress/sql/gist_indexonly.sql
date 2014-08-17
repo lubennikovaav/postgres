@@ -5,15 +5,13 @@
 CREATE TABLE gist_tbl (b box, p point);
 
 insert into gist_tbl select box(point(0.05*i, 0.05*i), point(0.05*i, 0.05*i)),
-			 point(0.05*i, 0.05*i) FROM generate_series(0,100000) as i;
+			 point(0.05*i, 0.05*i) FROM generate_series(0,10000) as i;
 
 
 vacuum analyze;
 
-SET enable_seqscan TO false;
-SET enable_bitmapscan TO false;
-SET enable_indexscan TO false;
-SET enable_indexonlyscan TO true;
+SET enable_seqscan=off;
+SET enable_bitmapscan=off;
 
 -- Check singlecolumn index-only scan for point opclass
 
