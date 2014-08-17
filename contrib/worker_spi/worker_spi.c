@@ -46,7 +46,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(worker_spi_launch);
 
 void		_PG_init(void);
-void		worker_spi_main(Datum);
+void		worker_spi_main(Datum) __attribute__((noreturn));
 
 /* flags set by signal handlers */
 static volatile sig_atomic_t got_sighup = false;
@@ -348,6 +348,7 @@ _PG_init(void)
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	worker.bgw_main = worker_spi_main;
+	worker.bgw_notify_pid = 0;
 
 	/*
 	 * Now fill in worker-specific data, and do the actual registrations.

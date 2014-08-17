@@ -52,6 +52,7 @@
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "common/fe_memutils.h"
+#include "storage/large_object.h"
 #include "pg_getopt.h"
 
 
@@ -492,7 +493,8 @@ GuessControlValues(void)
 	 */
 	gettimeofday(&tv, NULL);
 	sysidentifier = ((uint64) tv.tv_sec) << 32;
-	sysidentifier |= (uint32) (tv.tv_sec | tv.tv_usec);
+	sysidentifier |= ((uint64) tv.tv_usec) << 12;
+	sysidentifier |= getpid() & 0xFFF;
 
 	ControlFile.system_identifier = sysidentifier;
 
@@ -535,6 +537,7 @@ GuessControlValues(void)
 	ControlFile.nameDataLen = NAMEDATALEN;
 	ControlFile.indexMaxKeys = INDEX_MAX_KEYS;
 	ControlFile.toast_max_chunk_size = TOAST_MAX_CHUNK_SIZE;
+	ControlFile.loblksize = LOBLKSIZE;
 #ifdef HAVE_INT64_TIMESTAMP
 	ControlFile.enableIntTimes = true;
 #else
@@ -619,6 +622,8 @@ PrintControlValues(bool guessed)
 		   ControlFile.indexMaxKeys);
 	printf(_("Maximum size of a TOAST chunk:        %u\n"),
 		   ControlFile.toast_max_chunk_size);
+	printf(_("Size of a large-object chunk:         %u\n"),
+		   ControlFile.loblksize);
 	printf(_("Date/time type storage:               %s\n"),
 		   (ControlFile.enableIntTimes ? _("64-bit integers") : _("floating-point numbers")));
 	printf(_("Float4 argument passing:              %s\n"),
@@ -678,7 +683,7 @@ PrintNewControlValues()
 
 	if (set_xid_epoch != -1)
 	{
-		printf(_("NextXID Epoch:                        %u\n"),
+		printf(_("NextXID epoch:                        %u\n"),
 			   ControlFile.checkPointCopy.nextXidEpoch);
 	}
 }

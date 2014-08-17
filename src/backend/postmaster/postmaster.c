@@ -603,14 +603,10 @@ PostmasterMain(int argc, char *argv[])
 	 * tcop/postgres.c (the option sets should not conflict) and with the
 	 * common help() function in main/main.c.
 	 */
-	while ((opt = getopt(argc, argv, "A:B:bc:C:D:d:EeFf:h:ijk:lN:nOo:Pp:r:S:sTt:W:-:")) != -1)
+	while ((opt = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lN:nOo:Pp:r:S:sTt:W:-:")) != -1)
 	{
 		switch (opt)
 		{
-			case 'A':
-				SetConfigOption("debug_assertions", optarg, PGC_POSTMASTER, PGC_S_ARGV);
-				break;
-
 			case 'B':
 				SetConfigOption("shared_buffers", optarg, PGC_POSTMASTER, PGC_S_ARGV);
 				break;
@@ -829,10 +825,10 @@ PostmasterMain(int argc, char *argv[])
 	}
 	if (XLogArchiveMode && wal_level == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
-				(errmsg("WAL archival (archive_mode=on) requires wal_level \"archive\", \"hot_standby\" or \"logical\"")));
+				(errmsg("WAL archival (archive_mode=on) requires wal_level \"archive\", \"hot_standby\", or \"logical\"")));
 	if (max_wal_senders > 0 && wal_level == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
-				(errmsg("WAL streaming (max_wal_senders > 0) requires wal_level \"archive\", \"hot_standby\" or \"logical\"")));
+				(errmsg("WAL streaming (max_wal_senders > 0) requires wal_level \"archive\", \"hot_standby\", or \"logical\"")));
 
 	/*
 	 * Other one-time internal sanity checks can go here, if they are fast.
@@ -4671,6 +4667,9 @@ SubPostmasterMain(int argc, char *argv[])
 	if (strncmp(argv[1], "--forkbgworker=", 15) == 0)
 	{
 		int			shmem_slot;
+
+		/* do this as early as possible; in particular, before InitProcess() */
+		IsBackgroundWorker = true;
 
 		/* Close the postmaster's sockets */
 		ClosePostmasterPorts(false);

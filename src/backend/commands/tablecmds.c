@@ -16,7 +16,6 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
-#include "access/heapam_xlog.h"
 #include "access/multixact.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -533,7 +532,10 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
 									 true, false);
 
-	(void) heap_reloptions(relkind, reloptions, true);
+	if (relkind == RELKIND_VIEW)
+		(void) view_reloptions(reloptions, true);
+	else
+		(void) heap_reloptions(relkind, reloptions, true);
 
 	if (stmt->ofTypename)
 	{
@@ -564,8 +566,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId)
 	descriptor = BuildDescForRelation(schema);
 
 	localHasOids = interpretOidsOption(stmt->options,
-									   (relkind == RELKIND_RELATION ||
-										relkind == RELKIND_FOREIGN_TABLE));
+									   (relkind == RELKIND_RELATION));
 	descriptor->tdhasoid = (localHasOids || parentOidCount > 0);
 
 	/*
@@ -6737,6 +6738,26 @@ transformFkeyCheckAttrs(Relation pkrel,
 	bool		found_deferrable = false;
 	List	   *indexoidlist;
 	ListCell   *indexoidscan;
+	int			i,
+				j;
+
+	/*
+	 * Reject duplicate appearances of columns in the referenced-columns list.
+	 * Such a case is forbidden by the SQL standard, and even if we thought it
+	 * useful to allow it, there would be ambiguity about how to match the
+	 * list to unique indexes (in particular, it'd be unclear which index
+	 * opclass goes with which FK column).
+	 */
+	for (i = 0; i < numattrs; i++)
+	{
+		for (j = i + 1; j < numattrs; j++)
+		{
+			if (attnums[i] == attnums[j])
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_FOREIGN_KEY),
+						 errmsg("foreign key referenced-columns list must not contain duplicates")));
+		}
+	}
 
 	/*
 	 * Get the list of index OIDs for the table from the relcache, and look up
@@ -6749,8 +6770,6 @@ transformFkeyCheckAttrs(Relation pkrel,
 	{
 		HeapTuple	indexTuple;
 		Form_pg_index indexStruct;
-		int			i,
-					j;
 
 		indexoid = lfirst_oid(indexoidscan);
 		indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
@@ -6769,11 +6788,11 @@ transformFkeyCheckAttrs(Relation pkrel,
 			heap_attisnull(indexTuple, Anum_pg_index_indpred) &&
 			heap_attisnull(indexTuple, Anum_pg_index_indexprs))
 		{
-			/* Must get indclass the hard way */
 			Datum		indclassDatum;
 			bool		isnull;
 			oidvector  *indclass;
 
+			/* Must get indclass the hard way */
 			indclassDatum = SysCacheGetAttr(INDEXRELID, indexTuple,
 											Anum_pg_index_indclass, &isnull);
 			Assert(!isnull);
@@ -6781,7 +6800,13 @@ transformFkeyCheckAttrs(Relation pkrel,
 
 			/*
 			 * The given attnum list may match the index columns in any order.
-			 * Check that each list is a subset of the other.
+			 * Check for a match, and extract the appropriate opclasses while
+			 * we're at it.
+			 *
+			 * We know that attnums[] is duplicate-free per the test at the
+			 * start of this function, and we checked above that the number of
+			 * index columns agrees, so if we find a match for each attnums[]
+			 * entry then we must have a one-to-one match in some order.
 			 */
 			for (i = 0; i < numattrs; i++)
 			{
@@ -6790,30 +6815,13 @@ transformFkeyCheckAttrs(Relation pkrel,
 				{
 					if (attnums[i] == indexStruct->indkey.values[j])
 					{
+						opclasses[i] = indclass->values[j];
 						found = true;
 						break;
 					}
 				}
 				if (!found)
 					break;
-			}
-			if (found)
-			{
-				for (i = 0; i < numattrs; i++)
-				{
-					found = false;
-					for (j = 0; j < numattrs; j++)
-					{
-						if (attnums[j] == indexStruct->indkey.values[i])
-						{
-							opclasses[j] = indclass->values[i];
-							found = true;
-							break;
-						}
-					}
-					if (!found)
-						break;
-				}
 			}
 
 			/*
@@ -8890,9 +8898,11 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	{
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
-		case RELKIND_VIEW:
 		case RELKIND_MATVIEW:
 			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
+			break;
+		case RELKIND_VIEW:
+			(void) view_reloptions(newOptions, true);
 			break;
 		case RELKIND_INDEX:
 			(void) index_reloptions(rel->rd_am->amoptions, newOptions, true);

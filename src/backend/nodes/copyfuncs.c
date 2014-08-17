@@ -1327,6 +1327,7 @@ _copySubLink(const SubLink *from)
 	SubLink    *newnode = makeNode(SubLink);
 
 	COPY_SCALAR_FIELD(subLinkType);
+	COPY_SCALAR_FIELD(subLinkId);
 	COPY_NODE_FIELD(testexpr);
 	COPY_NODE_FIELD(operName);
 	COPY_NODE_FIELD(subselect);
@@ -2243,6 +2244,18 @@ _copyResTarget(const ResTarget *from)
 	COPY_NODE_FIELD(indirection);
 	COPY_NODE_FIELD(val);
 	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
+static MultiAssignRef *
+_copyMultiAssignRef(const MultiAssignRef *from)
+{
+	MultiAssignRef *newnode = makeNode(MultiAssignRef);
+
+	COPY_NODE_FIELD(source);
+	COPY_SCALAR_FIELD(colno);
+	COPY_SCALAR_FIELD(ncolumns);
 
 	return newnode;
 }
@@ -3554,6 +3567,21 @@ _copyCreateForeignTableStmt(const CreateForeignTableStmt *from)
 	return newnode;
 }
 
+static ImportForeignSchemaStmt *
+_copyImportForeignSchemaStmt(const ImportForeignSchemaStmt *from)
+{
+	ImportForeignSchemaStmt *newnode = makeNode(ImportForeignSchemaStmt);
+
+	COPY_STRING_FIELD(server_name);
+	COPY_STRING_FIELD(remote_schema);
+	COPY_STRING_FIELD(local_schema);
+	COPY_SCALAR_FIELD(list_type);
+	COPY_NODE_FIELD(table_list);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
 static CreateTrigStmt *
 _copyCreateTrigStmt(const CreateTrigStmt *from)
 {
@@ -4464,6 +4492,9 @@ copyObject(const void *from)
 		case T_CreateForeignTableStmt:
 			retval = _copyCreateForeignTableStmt(from);
 			break;
+		case T_ImportForeignSchemaStmt:
+			retval = _copyImportForeignSchemaStmt(from);
+			break;
 		case T_CreateTrigStmt:
 			retval = _copyCreateTrigStmt(from);
 			break;
@@ -4560,6 +4591,9 @@ copyObject(const void *from)
 			break;
 		case T_ResTarget:
 			retval = _copyResTarget(from);
+			break;
+		case T_MultiAssignRef:
+			retval = _copyMultiAssignRef(from);
 			break;
 		case T_TypeCast:
 			retval = _copyTypeCast(from);

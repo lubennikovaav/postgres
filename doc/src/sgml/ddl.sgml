@@ -2136,7 +2136,7 @@ WHERE c.altitude &gt; 500 AND c.tableoid = p.oid;
    following <command>INSERT</command> statement will fail:
 <programlisting>
 INSERT INTO cities (name, population, altitude, state)
-VALUES ('New York', NULL, NULL, 'NY');
+VALUES ('Albany', NULL, NULL, 'NY');
 </programlisting>
    We might hope that the data would somehow be routed to the
    <structname>capitals</structname> table, but this does not happen:
@@ -3069,8 +3069,9 @@ ANALYZE measurement;
     For additional information, see
     <xref linkend="sql-createforeigndatawrapper">,
     <xref linkend="sql-createserver">,
-    <xref linkend="sql-createusermapping">, and
-    <xref linkend="sql-createforeigntable">.
+    <xref linkend="sql-createusermapping">,
+    <xref linkend="sql-createforeigntable">, and
+    <xref linkend="sql-importforeignschema">.
    </para>
  </sect1>
 

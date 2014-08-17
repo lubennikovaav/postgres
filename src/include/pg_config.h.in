@@ -330,6 +330,9 @@
 /* Define to 1 if the system has the type `MINIDUMP_TYPE'. */
 #undef HAVE_MINIDUMP_TYPE
 
+/* Define to 1 if you have the `mkdtemp' function. */
+#undef HAVE_MKDTEMP
+
 /* Define to 1 if you have the <netinet/in.h> header file. */
 #undef HAVE_NETINET_IN_H
 
@@ -365,9 +368,6 @@
 
 /* Define to 1 if the PS_STRINGS thing exists. */
 #undef HAVE_PS_STRINGS
-
-/* Define if you have POSIX threads libraries and header files. */
-#undef HAVE_PTHREAD
 
 /* Define to 1 if you have the <pwd.h> header file. */
 #undef HAVE_PWD_H
@@ -429,6 +429,9 @@
 
 /* Define to 1 if you have the `srandom' function. */
 #undef HAVE_SRANDOM
+
+/* Define to 1 if you have the `SSL_get_current_compression' function. */
+#undef HAVE_SSL_GET_CURRENT_COMPRESSION
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H
@@ -602,8 +605,20 @@
 /* Define to 1 if you have the <utime.h> header file. */
 #undef HAVE_UTIME_H
 
+/* Define to 1 if you have BSD UUID support. */
+#undef HAVE_UUID_BSD
+
+/* Define to 1 if you have E2FS UUID support. */
+#undef HAVE_UUID_E2FS
+
 /* Define to 1 if you have the <uuid.h> header file. */
 #undef HAVE_UUID_H
+
+/* Define to 1 if you have OSSP UUID support. */
+#undef HAVE_UUID_OSSP
+
+/* Define to 1 if you have the <uuid/uuid.h> header file. */
+#undef HAVE_UUID_UUID_H
 
 /* Define to 1 if you have the `vsnprintf' function. */
 #undef HAVE_VSNPRINTF
@@ -695,10 +710,6 @@
    process. */
 #undef PROFILE_PID_DIR
 
-/* Define to the necessary symbol if this constant uses a non-standard name on
-   your system. */
-#undef PTHREAD_CREATE_JOINABLE
-
 /* RELSEG_SIZE is the maximum number of blocks allowed in one disk file. Thus,
    the maximum size of a single file is RELSEG_SIZE * BLCKSZ; relations bigger
    than that are divided into multiple files. RELSEG_SIZE * BLCKSZ must be
@@ -767,14 +778,14 @@
 /* Define to select named POSIX semaphores. */
 #undef USE_NAMED_POSIX_SEMAPHORES
 
+/* Define to build with OpenSSL support. (--with-openssl) */
+#undef USE_OPENSSL
+
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 
 /* Use replacement snprintf() functions. */
 #undef USE_REPL_SNPRINTF
-
-/* Define to build with (Open)SSL support. (--with-openssl) */
-#undef USE_SSL
 
 /* Define to select SysV-style semaphores. */
 #undef USE_SYSV_SEMAPHORES

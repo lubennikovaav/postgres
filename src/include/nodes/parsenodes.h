@@ -225,9 +225,6 @@ typedef struct ParamRef
 typedef enum A_Expr_Kind
 {
 	AEXPR_OP,					/* normal operator */
-	AEXPR_AND,					/* booleans - name field is unused */
-	AEXPR_OR,
-	AEXPR_NOT,
 	AEXPR_OP_ANY,				/* scalar op ANY (array) */
 	AEXPR_OP_ALL,				/* scalar op ALL (array) */
 	AEXPR_DISTINCT,				/* IS DISTINCT FROM - name must be "=" */
@@ -386,6 +383,23 @@ typedef struct ResTarget
 	Node	   *val;			/* the value expression to compute or assign */
 	int			location;		/* token location, or -1 if unknown */
 } ResTarget;
+
+/*
+ * MultiAssignRef - element of a row source expression for UPDATE
+ *
+ * In an UPDATE target list, when we have SET (a,b,c) = row-valued-expression,
+ * we generate separate ResTarget items for each of a,b,c.  Their "val" trees
+ * are MultiAssignRef nodes numbered 1..n, linking to a common copy of the
+ * row-valued-expression (which parse analysis will process only once, when
+ * handling the MultiAssignRef with colno=1).
+ */
+typedef struct MultiAssignRef
+{
+	NodeTag		type;
+	Node	   *source;			/* the row-valued expression */
+	int			colno;			/* column number for this target (1..n) */
+	int			ncolumns;		/* number of targets in the construct */
+} MultiAssignRef;
 
 /*
  * SortBy - for ORDER BY clause
@@ -1777,7 +1791,7 @@ typedef struct AlterForeignServerStmt
 } AlterForeignServerStmt;
 
 /* ----------------------
- *		Create FOREIGN TABLE Statements
+ *		Create FOREIGN TABLE Statement
  * ----------------------
  */
 
@@ -1816,6 +1830,29 @@ typedef struct DropUserMappingStmt
 	char	   *servername;		/* server name */
 	bool		missing_ok;		/* ignore missing mappings */
 } DropUserMappingStmt;
+
+/* ----------------------
+ *		Import Foreign Schema Statement
+ * ----------------------
+ */
+
+typedef enum ImportForeignSchemaType
+{
+	FDW_IMPORT_SCHEMA_ALL,		/* all relations wanted */
+	FDW_IMPORT_SCHEMA_LIMIT_TO, /* include only listed tables in import */
+	FDW_IMPORT_SCHEMA_EXCEPT	/* exclude listed tables from import */
+} ImportForeignSchemaType;
+
+typedef struct ImportForeignSchemaStmt
+{
+	NodeTag		type;
+	char	   *server_name;	/* FDW server name */
+	char	   *remote_schema;	/* remote schema name to query */
+	char	   *local_schema;	/* local schema to create objects in */
+	ImportForeignSchemaType list_type;	/* type of table list */
+	List	   *table_list;		/* List of RangeVar */
+	List	   *options;		/* list of options to pass to FDW */
+} ImportForeignSchemaStmt;
 
 /* ----------------------
  *		Create TRIGGER Statement

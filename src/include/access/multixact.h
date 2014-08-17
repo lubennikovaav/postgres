@@ -25,6 +25,8 @@
 
 #define MultiXactIdIsValid(multi) ((multi) != InvalidMultiXactId)
 
+#define MaxMultiXactOffset	((MultiXactOffset) 0xFFFFFFFF)
+
 /* Number of SLRU buffers to use for multixact */
 #define NUM_MXACTOFFSET_BUFFERS		8
 #define NUM_MXACTMEMBER_BUFFERS		16
@@ -89,10 +91,10 @@ extern MultiXactId MultiXactIdCreateFromMembers(int nmembers,
 							 MultiXactMember *members);
 
 extern MultiXactId ReadNextMultiXactId(void);
-extern bool MultiXactIdIsRunning(MultiXactId multi);
+extern bool MultiXactIdIsRunning(MultiXactId multi, bool isLockOnly);
 extern void MultiXactIdSetOldestMember(void);
 extern int GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **xids,
-					  bool allow_old);
+					  bool allow_old, bool isLockOnly);
 extern bool MultiXactHasRunningRemoteMembers(MultiXactId multi);
 extern bool MultiXactIdPrecedes(MultiXactId multi1, MultiXactId multi2);
 extern bool MultiXactIdPrecedesOrEquals(MultiXactId multi1,
@@ -117,12 +119,13 @@ extern void MultiXactGetCheckptMulti(bool is_shutdown,
 						 Oid *oldestMultiDB);
 extern void CheckPointMultiXact(void);
 extern MultiXactId GetOldestMultiXactId(void);
-extern void TruncateMultiXact(MultiXactId cutoff_multi);
+extern void TruncateMultiXact(void);
 extern void MultiXactSetNextMXact(MultiXactId nextMulti,
 					  MultiXactOffset nextMultiOffset);
 extern void MultiXactAdvanceNextMXact(MultiXactId minMulti,
 						  MultiXactOffset minMultiOffset);
 extern void MultiXactAdvanceOldest(MultiXactId oldestMulti, Oid oldestMultiDB);
+extern void MultiXactSetSafeTruncate(MultiXactId safeTruncateMulti);
 
 extern void multixact_twophase_recover(TransactionId xid, uint16 info,
 						   void *recdata, uint32 len);
@@ -132,7 +135,7 @@ extern void multixact_twophase_postabort(TransactionId xid, uint16 info,
 							 void *recdata, uint32 len);
 
 extern void multixact_redo(XLogRecPtr lsn, XLogRecord *record);
-extern void multixact_desc(StringInfo buf, uint8 xl_info, char *rec);
+extern void multixact_desc(StringInfo buf, XLogRecord *record);
 extern char *mxid_to_string(MultiXactId multi, int nmembers,
 			   MultiXactMember *members);
 

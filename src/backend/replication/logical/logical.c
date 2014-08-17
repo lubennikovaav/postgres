@@ -21,7 +21,7 @@
  *	  one to prepare a data write, and a final one for actually writing since
  *	  their implementation depends on the type of consumer.  Check
  *	  logicalfuncs.c for an example implementation of a fairly simple consumer
- *	  and a implementation of a WAL reading callback that's suitable for
+ *	  and an implementation of a WAL reading callback that's suitable for
  *	  simple consumers.
  *-------------------------------------------------------------------------
  */
@@ -125,7 +125,7 @@ StartupDecodingContext(List *output_plugin_options,
 	slot = MyReplicationSlot;
 
 	context = AllocSetContextCreate(CurrentMemoryContext,
-									"Changeset Extraction Context",
+									"Logical Decoding Context",
 									ALLOCSET_DEFAULT_MINSIZE,
 									ALLOCSET_DEFAULT_INITSIZE,
 									ALLOCSET_DEFAULT_MAXSIZE);
@@ -291,7 +291,7 @@ CreateInitDecodingContext(char *plugin,
 	 * decoding from, to avoid starting from a running xacts record referring
 	 * to xids whose rows have been vacuumed or pruned
 	 * already. GetOldestSafeDecodingTransactionId() returns such a value, but
-	 * without further interlock it's return value might immediately be out of
+	 * without further interlock its return value might immediately be out of
 	 * date.
 	 *
 	 * So we have to acquire the ProcArrayLock to prevent computation of new
@@ -451,11 +451,6 @@ DecodingContextFindStartpoint(LogicalDecodingContext *ctx)
 		XLogRecord *record;
 		char	   *err = NULL;
 
-		/*
-		 * If the caller requires that interrupts be checked, the read_page
-		 * callback should do so, as those will often wait.
-		 */
-
 		/* the read_page callback waits for new WAL */
 		record = XLogReadRecord(ctx->reader, startptr, &err);
 		if (err)
@@ -470,6 +465,8 @@ DecodingContextFindStartpoint(LogicalDecodingContext *ctx)
 		/* only continue till we found a consistent spot */
 		if (DecodingContextReady(ctx))
 			break;
+
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	ctx->slot->data.confirmed_flush = ctx->reader->EndRecPtr;
@@ -772,7 +769,7 @@ LogicalIncreaseXminForSlot(XLogRecPtr current_lsn, TransactionId xmin)
  * Mark the minimal LSN (restart_lsn) we need to read to replay all
  * transactions that have not yet committed at current_lsn.
  *
- * Just like IncreaseRestartDecodingForSlot this nly takes effect when the
+ * Just like IncreaseRestartDecodingForSlot this only takes effect when the
  * client has confirmed to have received current_lsn.
  */
 void

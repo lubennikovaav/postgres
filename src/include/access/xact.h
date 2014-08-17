@@ -180,8 +180,7 @@ typedef struct xl_xact_abort
 /*
  * COMMIT_PREPARED and ABORT_PREPARED are identical to COMMIT/ABORT records
  * except that we have to store the XID of the prepared transaction explicitly
- * --- the XID in the record header will be for the transaction doing the
- * COMMIT PREPARED or ABORT PREPARED command.
+ * --- the XID in the record header will be invalid.
  */
 
 typedef struct xl_xact_commit_prepared
@@ -256,6 +255,6 @@ extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 
 extern void xact_redo(XLogRecPtr lsn, XLogRecord *record);
-extern void xact_desc(StringInfo buf, uint8 xl_info, char *rec);
+extern void xact_desc(StringInfo buf, XLogRecord *record);
 
 #endif   /* XACT_H */

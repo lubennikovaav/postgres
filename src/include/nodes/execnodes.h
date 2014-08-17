@@ -728,6 +728,7 @@ typedef struct SubPlanState
 {
 	ExprState	xprstate;
 	struct PlanState *planstate;	/* subselect plan's state tree */
+	struct PlanState *parent;	/* parent plan node's state tree */
 	ExprState  *testexpr;		/* state of combining expression */
 	List	   *args;			/* states of argument expression(s) */
 	HeapTuple	curTuple;		/* copy of most recent tuple from subplan */
@@ -1406,6 +1407,7 @@ typedef struct SubqueryScanState
  *		nfuncs				number of functions being executed
  *		funcstates			per-function execution states (private in
  *							nodeFunctionscan.c)
+ *		argcontext			memory context to evaluate function arguments in
  * ----------------
  */
 struct FunctionScanPerFuncState;
@@ -1420,6 +1422,7 @@ typedef struct FunctionScanState
 	int			nfuncs;
 	struct FunctionScanPerFuncState *funcstates;		/* array of length
 														 * nfuncs */
+	MemoryContext argcontext;
 } FunctionScanState;
 
 /* ----------------

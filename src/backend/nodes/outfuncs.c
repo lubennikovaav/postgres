@@ -1115,6 +1115,7 @@ _outSubLink(StringInfo str, const SubLink *node)
 	WRITE_NODE_TYPE("SUBLINK");
 
 	WRITE_ENUM_FIELD(subLinkType, SubLinkType);
+	WRITE_INT_FIELD(subLinkId);
 	WRITE_NODE_FIELD(testexpr);
 	WRITE_NODE_FIELD(operName);
 	WRITE_NODE_FIELD(subselect);
@@ -1701,6 +1702,7 @@ _outPlannerInfo(StringInfo str, const PlannerInfo *node)
 	WRITE_INT_FIELD(join_cur_level);
 	WRITE_NODE_FIELD(init_plans);
 	WRITE_NODE_FIELD(cte_plan_ids);
+	WRITE_NODE_FIELD(multiexpr_params);
 	WRITE_NODE_FIELD(eq_classes);
 	WRITE_NODE_FIELD(canon_pathkeys);
 	WRITE_NODE_FIELD(left_join_clauses);
@@ -2006,6 +2008,19 @@ _outCreateForeignTableStmt(StringInfo str, const CreateForeignTableStmt *node)
 	_outCreateStmtInfo(str, (const CreateStmt *) node);
 
 	WRITE_STRING_FIELD(servername);
+	WRITE_NODE_FIELD(options);
+}
+
+static void
+_outImportForeignSchemaStmt(StringInfo str, const ImportForeignSchemaStmt *node)
+{
+	WRITE_NODE_TYPE("IMPORTFOREIGNSCHEMASTMT");
+
+	WRITE_STRING_FIELD(server_name);
+	WRITE_STRING_FIELD(remote_schema);
+	WRITE_STRING_FIELD(local_schema);
+	WRITE_ENUM_FIELD(list_type, ImportForeignSchemaType);
+	WRITE_NODE_FIELD(table_list);
 	WRITE_NODE_FIELD(options);
 }
 
@@ -2437,15 +2452,6 @@ _outAExpr(StringInfo str, const A_Expr *node)
 			appendStringInfoChar(str, ' ');
 			WRITE_NODE_FIELD(name);
 			break;
-		case AEXPR_AND:
-			appendStringInfoString(str, " AND");
-			break;
-		case AEXPR_OR:
-			appendStringInfoString(str, " OR");
-			break;
-		case AEXPR_NOT:
-			appendStringInfoString(str, " NOT");
-			break;
 		case AEXPR_OP_ANY:
 			appendStringInfoChar(str, ' ');
 			WRITE_NODE_FIELD(name);
@@ -2499,8 +2505,14 @@ _outValue(StringInfo str, const Value *value)
 			appendStringInfoString(str, value->val.str);
 			break;
 		case T_String:
+
+			/*
+			 * We use _outToken to provide escaping of the string's content,
+			 * but we don't want it to do anything with an empty string.
+			 */
 			appendStringInfoChar(str, '"');
-			_outToken(str, value->val.str);
+			if (value->val.str[0] != '\0')
+				_outToken(str, value->val.str);
 			appendStringInfoChar(str, '"');
 			break;
 		case T_BitString:
@@ -2587,6 +2599,16 @@ _outResTarget(StringInfo str, const ResTarget *node)
 	WRITE_NODE_FIELD(indirection);
 	WRITE_NODE_FIELD(val);
 	WRITE_LOCATION_FIELD(location);
+}
+
+static void
+_outMultiAssignRef(StringInfo str, const MultiAssignRef *node)
+{
+	WRITE_NODE_TYPE("MULTIASSIGNREF");
+
+	WRITE_NODE_FIELD(source);
+	WRITE_INT_FIELD(colno);
+	WRITE_INT_FIELD(ncolumns);
 }
 
 static void
@@ -3116,6 +3138,9 @@ _outNode(StringInfo str, const void *obj)
 			case T_CreateForeignTableStmt:
 				_outCreateForeignTableStmt(str, obj);
 				break;
+			case T_ImportForeignSchemaStmt:
+				_outImportForeignSchemaStmt(str, obj);
+				break;
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
 				break;
@@ -3199,6 +3224,9 @@ _outNode(StringInfo str, const void *obj)
 				break;
 			case T_ResTarget:
 				_outResTarget(str, obj);
+				break;
+			case T_MultiAssignRef:
+				_outMultiAssignRef(str, obj);
 				break;
 			case T_SortBy:
 				_outSortBy(str, obj);

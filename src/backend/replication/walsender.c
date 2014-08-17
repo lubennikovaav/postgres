@@ -148,9 +148,10 @@ static StringInfoData reply_message;
 static StringInfoData tmpbuf;
 
 /*
- * Timestamp of the last receipt of the reply from the standby.
+ * Timestamp of the last receipt of the reply from the standby. Set to 0 if
+ * wal_sender_timeout doesn't need to be active.
  */
-static TimestampTz last_reply_timestamp;
+static TimestampTz last_reply_timestamp = 0;
 
 /* Have we sent a heartbeat message asking for reply, since last reply? */
 static bool waiting_for_ping_response = false;
@@ -780,6 +781,11 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	else
 	{
 		CheckLogicalDecodingRequirements();
+		/*
+		 * Initially create the slot as ephemeral - that allows us to nicely
+		 * handle errors during initialization because it'll get dropped if
+		 * this transaction fails. We'll make it persistent at the end.
+		 */
 		ReplicationSlotCreate(cmd->slotname, true, RS_EPHEMERAL);
 	}
 
@@ -795,6 +801,15 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 										cmd->plugin, NIL,
 										logical_read_xlog_page,
 										WalSndPrepareWrite, WalSndWriteData);
+
+		/*
+		 * Signal that we don't need the timeout mechanism. We're just
+		 * creating the replication slot and don't yet accept feedback
+		 * messages or send keepalives. As we possibly need to wait for
+		 * further WAL the walsender would otherwise possibly be killed too
+		 * soon.
+		 */
+		last_reply_timestamp = 0;
 
 		/* build initial snapshot, might take a while */
 		DecodingContextFindStartpoint(ctx);
@@ -1188,9 +1203,11 @@ WalSndWaitForWal(XLogRecPtr loc)
 		 * possibly are waiting for a later location. So we send pings
 		 * containing the flush location every now and then.
 		 */
-		if (MyWalSnd->flush < sentPtr && !waiting_for_ping_response)
+		if (MyWalSnd->flush < sentPtr &&
+			MyWalSnd->write < sentPtr &&
+			!waiting_for_ping_response)
 		{
-			WalSndKeepalive(true);
+			WalSndKeepalive(false);
 			waiting_for_ping_response = true;
 		}
 
@@ -1672,8 +1689,8 @@ ProcessStandbyHSFeedbackMessage(void)
 	 * If we're using a replication slot we reserve the xmin via that,
 	 * otherwise via the walsender's PGXACT entry.
 	 *
-	 * XXX: It might make sense to introduce ephemeral slots and always use
-	 * the slot mechanism.
+	 * XXX: It might make sense to generalize the ephemeral slot concept and
+	 * always use the slot mechanism to handle the feedback xmin.
 	 */
 	if (MyReplicationSlot != NULL)		/* XXX: persistency configurable? */
 		PhysicalReplicationSlotNewXmin(feedbackXmin);
@@ -1693,7 +1710,7 @@ WalSndComputeSleeptime(TimestampTz now)
 {
 	long		sleeptime = 10000;		/* 10 s */
 
-	if (wal_sender_timeout > 0)
+	if (wal_sender_timeout > 0 && last_reply_timestamp > 0)
 	{
 		TimestampTz wakeup_time;
 		long		sec_to_timeout;
@@ -1735,6 +1752,10 @@ WalSndCheckTimeOut(TimestampTz now)
 {
 	TimestampTz timeout;
 
+	/* don't bail out if we're doing something that doesn't require timeouts */
+	if (last_reply_timestamp <= 0)
+		return;
+
 	timeout = TimestampTzPlusMilliseconds(last_reply_timestamp,
 										  wal_sender_timeout);
 
@@ -1764,7 +1785,10 @@ WalSndLoop(WalSndSendDataCallback send_data)
 	initStringInfo(&reply_message);
 	initStringInfo(&tmpbuf);
 
-	/* Initialize the last reply timestamp */
+	/*
+	 * Initialize the last reply timestamp. That enables timeout processing
+	 * from hereon.
+	 */
 	last_reply_timestamp = GetCurrentTimestamp();
 	waiting_for_ping_response = false;
 
@@ -2879,7 +2903,11 @@ WalSndKeepaliveIfNecessary(TimestampTz now)
 {
 	TimestampTz ping_time;
 
-	if (wal_sender_timeout <= 0)
+	/*
+	 * Don't send keepalive messages if timeouts are globally disabled or
+	 * we're doing something not partaking in timeouts.
+	 */
+	if (wal_sender_timeout <= 0 || last_reply_timestamp <= 0)
 		return;
 
 	if (waiting_for_ping_response)

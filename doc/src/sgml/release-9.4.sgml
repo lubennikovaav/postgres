@@ -96,7 +96,7 @@
       linkend="functions-formatting-table"><function>to_timestamp()</></link>
       and <function>to_date()</> format strings to consume a corresponding
       number of characters in the input string (whitespace or not), then
-      conditionally consume adjacent whitespace if not in <literal>FX</>
+      conditionally consume adjacent whitespace, if not in <literal>FX</>
       mode (Jeevan Chalke)
      </para>
 
@@ -111,13 +111,13 @@
 
     <listitem>
      <para>
-      Tighten checks for multi-dimensional <link
+      Tighten checks for multidimensional <link
       linkend="arrays">array</link> input (Bruce Momjian)
      </para>
 
      <para>
       Previously an input array string that started with a single-element
-      array dimension could later contain multi-dimensional segments,
+      array dimension could later contain multidimensional segments,
       e.g. <literal>'{{1}, {2,3}}'::int[]</>.
      </para>
     </listitem>
@@ -164,8 +164,41 @@
 
     <listitem>
      <para>
+      Values of type
+      <link linkend="datatype-datetime"><type>timestamp</></link>  and
+      <link linkend="datatype-datetime"><type>timestamptz</></link> are now
+      rendered in a string format compliant with ISO 8601 rather than the
+      default output format when converting to or used in
+      <link linkend="datatype-json"><type>JSON</type></link>.
+      (Andrew Dunstan)
+     </para>
+
+     <para>
+      Previously these were rendered in the default text output format
+      for the type, but many JSON processors require timestamps in ISO 8601
+      format.
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Unicode escapes in <link linkend="datatype-json"><type>JSON</type></link>
+      text values are no longer rendered with the backslash escaped.
+      (Andrew Dunstan)
+     </para>
+
+     <para>
+      Previously all backslashes in text values being formed into JSON were
+      escaped. Now a backslash followed by "u" and four hexadecimal digits is
+      not escaped, as this is a legal sequence in a JSON string value, and
+      escaping the backslash led to some perverse results.
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
       Rename <link linkend="SQL-EXPLAIN"><command>EXPLAIN
-      ANALYZE</></link>'s "total runtime" output to "execution time"
+      ANALYZE</></link>'s <quote>total runtime</quote> output to <quote>execution time</quote>
       (Tom Lane)
      </para>
 
@@ -285,7 +318,7 @@
 
     <listitem>
      <para>
-      <link linkend="pgupgrade"><application>Pg_upgrade</></link> now
+      <link linkend="pgupgrade"><application>pg_upgrade</></link> now
       uses <option>-U</> to specify the user name (Bruce Momjian)
      </para>
 
@@ -302,6 +335,15 @@
       that can be registered
       by <function>RegisterBackgroundWorker()</function> is now limited to
       <link linkend="guc-max-worker-processes"><varname>max_worker_processes</></link>
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <link linkend="bgworker">background workers</link> registered at
+      postmaster startup time should set
+      <structfield>bgw_notify_pid</structfield> to 0.
+      <command></>
      </para>
     </listitem>
 
@@ -523,7 +565,7 @@
 
       <listitem>
        <para>
-        Improve speed of accesessing many different <link
+        Improve speed of accessing many different <link
         linkend="SQL-CREATESEQUENCE">sequences</link> in the same session
         (David Rowley)
        </para>
@@ -531,8 +573,9 @@
 
       <listitem>
        <para>
-        Allow sorting and B-tree <link linkend="SQL-CREATEINDEX">index
-        builds</link> to use over four gigabytes of memory (Noah Misch)
+        Raise hard limit on the number of tuples held in memory during sorting
+        and B-tree <link linkend="SQL-CREATEINDEX">index builds</link> (Noah
+        Misch)
        </para>
       </listitem>
 
@@ -573,7 +616,7 @@
       <listitem>
        <para>
         Expose the estimation of number of changed tuples since last <link
-        linkend="vacuum-for-statistics">analyze</link> (Mark Kirkwood)
+        linkend="vacuum-for-statistics">ANALYZE</link> (Mark Kirkwood)
        </para>
 
        <para>
@@ -616,17 +659,18 @@
        </para>
 
        <para>
-        Such keys are faster and have improved security over previous
-        options. The new configuration
-        parameter <link linkend="guc-ssl-ecdh-curve"><varname>ssl_ecdh_curve</></link>
-        controls which curve is used.
+        This allows use of Elliptic Curve keys for server authentication.
+        Such keys are faster and have improved security over <acronym>RSA</> keys.
+        The new configuration parameter
+        <link linkend="guc-ssl-ecdh-curve"><varname>ssl_ecdh_curve</></link>
+        controls which curve is used for <acronym>ECDH</>.
        </para>
       </listitem>
 
       <listitem>
        <para>
         Improve the default <link
-        linkend="guc-ssl-ciphers"><varname>ssl_ciphers</></link> ciphers
+        linkend="guc-ssl-ciphers"><varname>ssl_ciphers</></link> value
         (Marko Kreen)
        </para>
       </listitem>
@@ -731,7 +775,7 @@
 
       <listitem>
        <para>
-        Allow printf-style space padding to be specified in <link
+        Allow <function>printf</function>-style space padding to be specified in <link
         linkend="guc-log-line-prefix"><varname>log_line_prefix</></link>
         (David Rowley)
        </para>
@@ -795,14 +839,14 @@
 
       <listitem>
        <para>
-        Have Windows <acronym>ASCII</>-encoded databases and server process
-        (e.g.  <link linkend="app-postmaster">postmaster</>) emit messages
-        in the <envar>LC_CTYPE</>-defined language (Alexander Law,
-        Noah Misch)
+        Have Windows <literal>SQL_ASCII</>-encoded databases and server
+        process (e.g.  <link linkend="app-postmaster">postmaster</>) emit
+        messages in the character encoding of the server's Windows user locale
+        (Alexander Law, Noah Misch)
        </para>
 
        <para>
-        Previously these messages were output using the Windows
+        Previously these messages were output in the Windows
         <acronym>ANSI</> code page.
        </para>
       </listitem>
@@ -941,8 +985,8 @@
        <listitem>
         <para>
          Allow <link
-         linkend="app-pgreceivexlog"><application>pg_recvlogical</></link>
-         to receive data logical decoding data (Andres Freund)
+         linkend="app-pgrecvlogical"><application>pg_recvlogical</></link>
+         to receive logical decoding data (Andres Freund)
         </para>
        </listitem>
 
@@ -1054,7 +1098,7 @@
 
         <para>
          Previously only unquoted matching strings would be imported
-         as NULLs.
+         as null values.
         </para>
        </listitem>
 
@@ -1326,23 +1370,23 @@
        <listitem>
         <para>
          Add structured (non-text) data type (<link
-         linkend="datatype-json"><type>JSONB</></link>) for storing
-         <type>JSON</> data (Oleg Bartunov, Teodor Sigaev, Alexander
+         linkend="datatype-json"><type>jsonb</></link>) for storing
+         JSON data (Oleg Bartunov, Teodor Sigaev, Alexander
          Korotkov, Peter Geoghegan, and Andrew Dunstan)
         </para>
 
         <para>
-         This allows for faster access to values in the <type>JSON</>
-         document and faster and more useful indexing of <type>JSON</>.
-         Scalar values in <type>JSONB</> documents are typed as appropriate
+         This allows for faster access to values in the JSON
+         document and faster and more useful indexing of JSON.
+         Scalar values in <type>jsonb</> documents are typed as appropriate
          scalar SQL types.
         </para>
        </listitem>
 
        <listitem>
         <para>
-         Add new <type>JSON</> functions to allow for the construction
-         of arbitrarily complex json trees (Andrew Dunstan, Laurence Rowe)
+         Add new JSON functions to allow for the construction
+         of arbitrarily complex JSON trees (Andrew Dunstan, Laurence Rowe)
         </para>
 
         <para>
@@ -1358,7 +1402,7 @@
         <para>
          Add <link
          linkend="functions-json-processing-table"><function>json_typeof()</></link>
-         to return the data type of a <type>JSON</> value (Andrew Tipton)
+         to return the data type of a <type>json</> value (Andrew Tipton)
         </para>
        </listitem>
 
@@ -1402,9 +1446,8 @@
 
       <listitem>
        <para>
-        Add <acronym>SQL</> functions to allow <link
-        linkend="lo-interfaces">large object reads/writes</link> at
-        arbitrary offsets (Pavel Stehule)
+        Add <acronym>SQL</> functions to allow <link linkend="lo-funcs">large
+        object reads/writes</link> at arbitrary offsets (Pavel Stehule)
        </para>
       </listitem>
 
@@ -1595,6 +1638,18 @@
       </para>
      </listitem>
 
+     <listitem>
+      <para>
+       Convert <link linkend="datatype-numeric"><type>NUMERIC</></link>s to
+       <type>decimal</> values in <link linkend="plpython">PL/Python</link>
+       (Szymon Guz, Ronan Dunklau)
+      </para>
+
+      <para>
+       Previously these were converted to <type>float</>s.
+      </para>
+     </listitem>
+
     </itemizedlist>
 
     <sect4>
@@ -1635,26 +1690,6 @@
       </listitem>
 
     </itemizedlist>
-
-    </sect4>
-
-    <sect4>
-     <title><link linkend="plpython">PL/Python</link> Server-Side Language</title>
-
-     <itemizedlist>
-
-      <listitem>
-       <para>
-        Convert <link linkend="datatype-numeric"><type>NUMERIC</></link>s
-        to <type>decimal</> values in PL/Python (Szymon Guz, Ronan Dunklau)
-       </para>
-
-       <para>
-        Previously these were converted to <type>float</>s.
-       </para>
-      </listitem>
-
-     </itemizedlist>
 
     </sect4>
 
@@ -1747,14 +1782,14 @@
 
       <listitem>
        <para>
-        Allow <function>sizeof()</> in <link linkend="ecpg">ecpg</link>
+        Allow <function>sizeof()</> in <link linkend="ecpg">ECPG</link>
         C array definitions (Michael Meskes)
        </para>
       </listitem>
 
       <listitem>
        <para>
-        Have <link linkend="ecpg">ecpg</link> properly handle nesting
+        Have <link linkend="ecpg">ECPG</link> properly handle nesting
         requirements in C and <acronym>SQL</> mode for C-style comments
         (Michael Meskes)
        </para>
@@ -1836,19 +1871,19 @@
        <listitem>
         <para>
          Have <application>psql</> <command>\d+</> output an
-         <literal>OID</> line only if an oid column exists in a table
+         <literal>OID</> line only if an <literal>oid</literal> column exists in a table
          (Bruce Momjian)
         </para>
 
         <para>
-         Previously, the presence or absence of an oid column was always
+         Previously, the presence or absence of an <literal>oid</literal> column was always
          reported.
         </para>
        </listitem>
 
        <listitem>
         <para>
-         Have <command>\d</> display disabled system triggers (Bruce
+         Have <command>\d</> show disabled system triggers (Bruce
          Momjian)
         </para>
 
@@ -1970,7 +2005,7 @@
       <listitem>
        <para>
         Add <application>pg_basebackup</> option <option>--xlogdir</>
-        to specify the <filename>pg_xlog</> direction location (Haribabu
+        to specify the <filename>pg_xlog</> directory location (Haribabu
         Kommi)
        </para>
       </listitem>
@@ -2035,7 +2070,7 @@
 
       <listitem>
        <para>
-        Remove <function>SnapshotNow()</> and
+        Remove <varname>SnapshotNow</> and
         <function>HeapTupleSatisfiesNow()</> (Robert Haas)
        </para>
 
@@ -2047,8 +2082,8 @@
 
       <listitem>
        <para>
-        Add <acronym>API</> for memory allocations over four gigabytes
-        (Noah Misch)
+        Add <acronym>API</> for memory allocations over one gigabyte (Noah
+        Misch)
        </para>
       </listitem>
 
@@ -2186,7 +2221,8 @@
 
       <listitem>
        <para>
-        Improve <application>valgrind</> error reporting (Noah Misch)
+        Improve <application>Valgrind</> detection of invalid memory usage
+        (Noah Misch)
        </para>
       </listitem>
 
@@ -2215,7 +2251,7 @@
 
       <listitem>
        <para>
-        Avoid most uses of dlltool in <productname>Cygwin</> and
+        Avoid most uses of <command>dlltool</command> in <productname>Cygwin</> and
         <productname>Mingw</> builds (Marco Atzeri, Hiroshi Inoue)
        </para>
       </listitem>
@@ -2258,7 +2294,7 @@
 
        <para>
         This allows the creation of version 4 <acronym>UUID</>s without
-        requiring the installation of uuid-ossp.
+        requiring the installation of <literal>uuid-ossp</literal>.
        </para>
       </listitem>
 
@@ -2281,11 +2317,11 @@
       <listitem>
        <para>
         Have <link linkend="pgstattuple"><application>pgstattuple</></link>
-        functions use regclass-type arguments (Satoshi Nagayasu)
+        functions use <type>regclass</type>-type arguments (Satoshi Nagayasu)
        </para>
 
        <para>
-        While text-type arguments are still supported, they will be
+        While <type>text</type>-type arguments are still supported, they will be
         removed in a later major release.
        </para>
       </listitem>

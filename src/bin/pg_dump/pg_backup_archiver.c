@@ -353,16 +353,17 @@ RestoreArchive(Archive *AHX)
 
 	ahprintf(AH, "--\n-- PostgreSQL database dump\n--\n\n");
 
+	if (AH->archiveRemoteVersion)
+		ahprintf(AH, "-- Dumped from database version %s\n",
+				 AH->archiveRemoteVersion);
+	if (AH->archiveDumpVersion)
+		ahprintf(AH, "-- Dumped by pg_dump version %s\n",
+				 AH->archiveDumpVersion);
+
+	ahprintf(AH, "\n");
+
 	if (AH->public.verbose)
-	{
-		if (AH->archiveRemoteVersion)
-			ahprintf(AH, "-- Dumped from database version %s\n",
-					 AH->archiveRemoteVersion);
-		if (AH->archiveDumpVersion)
-			ahprintf(AH, "-- Dumped by pg_dump version %s\n",
-					 AH->archiveDumpVersion);
 		dumpTimestamp(AH, "Started on", AH->createDate);
-	}
 
 	if (ropt->single_txn)
 	{
@@ -696,7 +697,13 @@ restore_toc_entry(ArchiveHandle *AH, TocEntry *te,
 
 					_selectOutputSchema(AH, "pg_catalog");
 
+					/* Send BLOB COMMENTS data to ExecuteSimpleCommands() */
+					if (strcmp(te->desc, "BLOB COMMENTS") == 0)
+						AH->outputKind = OUTPUT_OTHERDATA;
+
 					(*AH->PrintTocDataPtr) (AH, te, ropt);
+
+					AH->outputKind = OUTPUT_SQLCMDS;
 				}
 				else
 				{

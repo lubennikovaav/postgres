@@ -717,13 +717,14 @@ typedef struct BTSpool BTSpool; /* opaque type known only within nbtsort.c */
 extern BTSpool *_bt_spoolinit(Relation heap, Relation index,
 			  bool isunique, bool isdead);
 extern void _bt_spooldestroy(BTSpool *btspool);
-extern void _bt_spool(IndexTuple itup, BTSpool *btspool);
+extern void _bt_spool(BTSpool *btspool, ItemPointer self,
+		  Datum *values, bool *isnull);
 extern void _bt_leafbuild(BTSpool *btspool, BTSpool *spool2);
 
 /*
  * prototypes for functions in nbtxlog.c
  */
 extern void btree_redo(XLogRecPtr lsn, XLogRecord *record);
-extern void btree_desc(StringInfo buf, uint8 xl_info, char *rec);
+extern void btree_desc(StringInfo buf, XLogRecord *record);
 
 #endif   /* NBTREE_H */

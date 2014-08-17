@@ -231,11 +231,12 @@ PerformAuthentication(Port *port)
 	{
 		if (am_walsender)
 		{
-#ifdef USE_SSL
-			if (port->ssl)
+#ifdef USE_OPENSSL
+			if (port->ssl_in_use)
 				ereport(LOG,
-						(errmsg("replication connection authorized: user=%s SSL enabled (protocol=%s, cipher=%s)",
-								port->user_name, SSL_get_version(port->ssl), SSL_get_cipher(port->ssl))));
+						(errmsg("replication connection authorized: user=%s SSL enabled (protocol=%s, cipher=%s, compression=%s)",
+								port->user_name, SSL_get_version(port->ssl), SSL_get_cipher(port->ssl),
+								SSL_get_current_compression(port->ssl) ? _("on") : _("off"))));
 			else
 #endif
 				ereport(LOG,
@@ -244,11 +245,12 @@ PerformAuthentication(Port *port)
 		}
 		else
 		{
-#ifdef USE_SSL
-			if (port->ssl)
+#ifdef USE_OPENSSL
+			if (port->ssl_in_use)
 				ereport(LOG,
-						(errmsg("connection authorized: user=%s database=%s SSL enabled (protocol=%s, cipher=%s)",
-								port->user_name, port->database_name, SSL_get_version(port->ssl), SSL_get_cipher(port->ssl))));
+						(errmsg("connection authorized: user=%s database=%s SSL enabled (protocol=%s, cipher=%s, compression=%s)",
+								port->user_name, port->database_name, SSL_get_version(port->ssl), SSL_get_cipher(port->ssl),
+								SSL_get_current_compression(port->ssl) ? _("on") : _("off"))));
 			else
 #endif
 				ereport(LOG,

@@ -817,40 +817,18 @@ CREATE OR REPLACE FUNCTION
   pg_start_backup(label text, fast boolean DEFAULT false)
   RETURNS pg_lsn STRICT VOLATILE LANGUAGE internal AS 'pg_start_backup';
 
+-- legacy definition for compatibility with 9.3
 CREATE OR REPLACE FUNCTION
   json_populate_record(base anyelement, from_json json, use_json_as_text boolean DEFAULT false)
   RETURNS anyelement LANGUAGE internal STABLE AS 'json_populate_record';
 
+-- legacy definition for compatibility with 9.3
 CREATE OR REPLACE FUNCTION
   json_populate_recordset(base anyelement, from_json json, use_json_as_text boolean DEFAULT false)
   RETURNS SETOF anyelement LANGUAGE internal STABLE ROWS 100  AS 'json_populate_recordset';
 
-CREATE OR REPLACE FUNCTION
-  jsonb_populate_record(base anyelement, from_json jsonb, use_json_as_text boolean DEFAULT false)
-  RETURNS anyelement LANGUAGE internal STABLE AS 'jsonb_populate_record';
-
-CREATE OR REPLACE FUNCTION
-  jsonb_populate_recordset(base anyelement, from_json jsonb, use_json_as_text boolean DEFAULT false)
-  RETURNS SETOF anyelement LANGUAGE internal STABLE ROWS 100  AS 'jsonb_populate_recordset';
-
-CREATE OR REPLACE FUNCTION
-  json_to_record(from_json json, nested_as_text boolean DEFAULT false)
-  RETURNS record LANGUAGE internal STABLE AS 'json_to_record';
-
-CREATE OR REPLACE FUNCTION
-  json_to_recordset(from_json json, nested_as_text boolean DEFAULT false)
-  RETURNS SETOF record LANGUAGE internal STABLE ROWS 100  AS 'json_to_recordset';
-
-CREATE OR REPLACE FUNCTION
-  jsonb_to_record(from_json jsonb, nested_as_text boolean DEFAULT false)
-  RETURNS record LANGUAGE internal STABLE AS 'jsonb_to_record';
-
-CREATE OR REPLACE FUNCTION
-  jsonb_to_recordset(from_json jsonb, nested_as_text boolean DEFAULT false)
-  RETURNS SETOF record LANGUAGE internal STABLE ROWS 100  AS 'jsonb_to_recordset';
-
 CREATE OR REPLACE FUNCTION pg_logical_slot_get_changes(
-    IN slotname name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
+    IN slot_name name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
     OUT location pg_lsn, OUT xid xid, OUT data text)
 RETURNS SETOF RECORD
 LANGUAGE INTERNAL
@@ -858,7 +836,7 @@ VOLATILE ROWS 1000 COST 1000
 AS 'pg_logical_slot_get_changes';
 
 CREATE OR REPLACE FUNCTION pg_logical_slot_peek_changes(
-    IN slotname name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
+    IN slot_name name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
     OUT location pg_lsn, OUT xid xid, OUT data text)
 RETURNS SETOF RECORD
 LANGUAGE INTERNAL
@@ -866,7 +844,7 @@ VOLATILE ROWS 1000 COST 1000
 AS 'pg_logical_slot_peek_changes';
 
 CREATE OR REPLACE FUNCTION pg_logical_slot_get_binary_changes(
-    IN slotname name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
+    IN slot_name name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
     OUT location pg_lsn, OUT xid xid, OUT data bytea)
 RETURNS SETOF RECORD
 LANGUAGE INTERNAL
@@ -874,7 +852,7 @@ VOLATILE ROWS 1000 COST 1000
 AS 'pg_logical_slot_get_binary_changes';
 
 CREATE OR REPLACE FUNCTION pg_logical_slot_peek_binary_changes(
-    IN slotname name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
+    IN slot_name name, IN upto_lsn pg_lsn, IN upto_nchanges int, VARIADIC options text[] DEFAULT '{}',
     OUT location pg_lsn, OUT xid xid, OUT data bytea)
 RETURNS SETOF RECORD
 LANGUAGE INTERNAL

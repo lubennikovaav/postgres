@@ -68,6 +68,8 @@ usage(void)
 	printf(_("  %s [OPTION]...\n"), progname);
 	printf(_("\nOptions:\n"));
 	printf(_("  -f, --file=FILE        receive log into this file. - for stdout\n"));
+	printf(_("  -F  --fsync-interval=SECS\n"
+			 "                         frequency of syncs to the output file (default: %d)\n"), (fsync_interval / 1000));
 	printf(_("  -n, --no-loop          do not loop on connection lost\n"));
 	printf(_("  -v, --verbose          output verbose messages\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
@@ -80,20 +82,18 @@ usage(void)
 	printf(_("  -w, --no-password      never prompt for password\n"));
 	printf(_("  -W, --password         force password prompt (should happen automatically)\n"));
 	printf(_("\nReplication options:\n"));
-	printf(_("  -F  --fsync-interval=SECS\n"
-			 "                         frequency of syncs to the output file (default: %d)\n"), (fsync_interval / 1000));
+	printf(_("  -I, --startpos=PTR     where in an existing slot should the streaming start\n"));
 	printf(_("  -o, --option=NAME[=VALUE]\n"
 			 "                         specify option NAME with optional value VALUE, to be passed\n"
 			 "                         to the output plugin\n"));
 	printf(_("  -P, --plugin=PLUGIN    use output plugin PLUGIN (default: %s)\n"), plugin);
 	printf(_("  -s, --status-interval=SECS\n"
 			 "                         time between status packets sent to server (default: %d)\n"), (standby_message_timeout / 1000));
-	printf(_("  -S, --slot=SLOT        use existing replication slot SLOT instead of starting a new one\n"));
-	printf(_("  -I, --startpos=PTR     where in an existing slot should the streaming start\n"));
+	printf(_("  -S, --slot=SLOT        name of the logical replication slot\n"));
 	printf(_("\nAction to be performed:\n"));
-	printf(_("      --create           create a new replication slot (for the slotname see --slot)\n"));
-	printf(_("      --start            start streaming in a replication slot (for the slotname see --slot)\n"));
-	printf(_("      --drop             drop the replication slot (for the slotname see --slot)\n"));
+	printf(_("      --create           create a new replication slot (for the slot's name see --slot)\n"));
+	printf(_("      --start            start streaming in a replication slot (for the slot's name see --slot)\n"));
+	printf(_("      --drop             drop the replication slot (for the slot's name see --slot)\n"));
 	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
 }
 
@@ -600,6 +600,7 @@ main(int argc, char **argv)
 	static struct option long_options[] = {
 /* general options */
 		{"file", required_argument, NULL, 'f'},
+		{"fsync-interval", required_argument, NULL, 'F'},
 		{"no-loop", no_argument, NULL, 'n'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"version", no_argument, NULL, 'V'},
@@ -612,12 +613,11 @@ main(int argc, char **argv)
 		{"no-password", no_argument, NULL, 'w'},
 		{"password", no_argument, NULL, 'W'},
 /* replication options */
+		{"startpos", required_argument, NULL, 'I'},
 		{"option", required_argument, NULL, 'o'},
 		{"plugin", required_argument, NULL, 'P'},
 		{"status-interval", required_argument, NULL, 's'},
-		{"fsync-interval", required_argument, NULL, 'F'},
 		{"slot", required_argument, NULL, 'S'},
-		{"startpos", required_argument, NULL, 'I'},
 /* action */
 		{"create", no_argument, NULL, 1},
 		{"start", no_argument, NULL, 2},
@@ -647,7 +647,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "f:F:nvd:h:o:p:U:wWP:s:S:",
+	while ((c = getopt_long(argc, argv, "f:F:nvd:h:p:U:wWI:o:P:s:S:",
 							long_options, &option_index)) != -1)
 	{
 		switch (c)
@@ -655,6 +655,15 @@ main(int argc, char **argv)
 /* general options */
 			case 'f':
 				outfile = pg_strdup(optarg);
+				break;
+			case 'F':
+				fsync_interval = atoi(optarg) * 1000;
+				if (fsync_interval < 0)
+				{
+					fprintf(stderr, _("%s: invalid fsync interval \"%s\"\n"),
+							progname, optarg);
+					exit(1);
+				}
 				break;
 			case 'n':
 				noloop = 1;
@@ -688,6 +697,16 @@ main(int argc, char **argv)
 				dbgetpassword = 1;
 				break;
 /* replication options */
+			case 'I':
+				if (sscanf(optarg, "%X/%X", &hi, &lo) != 2)
+				{
+					fprintf(stderr,
+							_("%s: could not parse start position \"%s\"\n"),
+							progname, optarg);
+					exit(1);
+				}
+				startpos = ((uint64) hi) << 32 | lo;
+				break;
 			case 'o':
 				{
 					char	   *data = pg_strdup(optarg);
@@ -720,27 +739,8 @@ main(int argc, char **argv)
 					exit(1);
 				}
 				break;
-			case 'F':
-				fsync_interval = atoi(optarg) * 1000;
-				if (fsync_interval < 0)
-				{
-					fprintf(stderr, _("%s: invalid fsync interval \"%s\"\n"),
-							progname, optarg);
-					exit(1);
-				}
-				break;
 			case 'S':
 				replication_slot = pg_strdup(optarg);
-				break;
-			case 'I':
-				if (sscanf(optarg, "%X/%X", &hi, &lo) != 2)
-				{
-					fprintf(stderr,
-							_("%s: could not parse start position \"%s\"\n"),
-							progname, optarg);
-					exit(1);
-				}
-				startpos = ((uint64) hi) << 32 | lo;
 				break;
 /* action */
 			case 1:
@@ -814,15 +814,15 @@ main(int argc, char **argv)
 
 	if (do_drop_slot && (do_create_slot || do_start_slot))
 	{
-		fprintf(stderr, _("%s: cannot use --init or --start together with --stop\n"), progname);
+		fprintf(stderr, _("%s: cannot use --create or --start together with --drop\n"), progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
 	}
 
-	if (startpos && (do_create_slot || do_drop_slot))
+	if (startpos != InvalidXLogRecPtr && (do_create_slot || do_drop_slot))
 	{
-		fprintf(stderr, _("%s: cannot use --init or --stop together with --startpos\n"), progname);
+		fprintf(stderr, _("%s: cannot use --create or --drop together with --startpos\n"), progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);

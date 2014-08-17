@@ -145,6 +145,15 @@
 #endif
 
 /*
+ * USE_SSL code should be compiled only when compiling with an SSL
+ * implementation.  (Currently, only OpenSSL is supported, but we might add
+ * more implementations in the future.)
+ */
+#ifdef USE_OPENSSL
+#define USE_SSL
+#endif
+
+/*
  * This is the default directory in which AF_UNIX socket files are
  * placed.  Caution: changing this risks breaking your existing client
  * applications, which are likely to continue to look in the old
@@ -153,6 +162,11 @@
  * with the postmaster's -k switch.
  */
 #define DEFAULT_PGSOCKET_DIR  "/tmp"
+
+/*
+ * This is the default event source for Windows event log.
+ */
+#define DEFAULT_EVENT_SOURCE  "PostgreSQL"
 
 /*
  * The random() function is expected to yield values between 0 and

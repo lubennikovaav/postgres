@@ -76,11 +76,10 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
-
 PG_MODULE_MAGIC;
 
 /* Location of permanent stats file (valid when database is shut down) */
-#define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
+#define PGSS_DUMP_FILE	PGSTAT_STAT_PERMANENT_DIRECTORY "/pg_stat_statements.stat"
 
 /*
  * Location of external query text file.  We don't keep it in the core
@@ -962,7 +961,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 	{
 		instr_time	start;
 		instr_time	duration;
-		uint64		rows = 0;
+		uint64		rows;
 		BufferUsage bufusage_start,
 					bufusage;
 		uint32		queryId;
@@ -995,7 +994,15 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 
 		/* parse command tag to retrieve the number of affected rows. */
 		if (completionTag &&
-			sscanf(completionTag, "COPY " UINT64_FORMAT, &rows) != 1)
+			strncmp(completionTag, "COPY ", 5) == 0)
+		{
+#ifdef HAVE_STRTOULL
+			rows = strtoull(completionTag + 5, NULL, 10);
+#else
+			rows = strtoul(completionTag + 5, NULL, 10);
+#endif
+		}
+		else
 			rows = 0;
 
 		/* calc differences of buffer counters. */
@@ -2388,6 +2395,7 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 				SubLink    *sublink = (SubLink *) node;
 
 				APP_JUMB(sublink->subLinkType);
+				APP_JUMB(sublink->subLinkId);
 				JumbleExpr(jstate, (Node *) sublink->testexpr);
 				JumbleQuery(jstate, (Query *) sublink->subselect);
 			}

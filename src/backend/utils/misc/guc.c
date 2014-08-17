@@ -125,9 +125,6 @@ extern char *default_tablespace;
 extern char *temp_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool synchronize_seqscans;
-extern char *SSLCipherSuites;
-extern char *SSLECDHCurve;
-extern bool SSLPreferServerCiphers;
 
 #ifdef TRACE_SORT
 extern bool trace_sort;
@@ -174,7 +171,6 @@ static void assign_syslog_ident(const char *newval, void *extra);
 static void assign_session_replication_role(int newval, void *extra);
 static bool check_temp_buffers(int *newval, void **extra, GucSource source);
 static bool check_phony_autocommit(bool *newval, void **extra, GucSource source);
-static bool check_debug_assertions(bool *newval, void **extra, GucSource source);
 static bool check_bonjour(bool *newval, void **extra, GucSource source);
 static bool check_ssl(bool *newval, void **extra, GucSource source);
 static bool check_stage_log_stats(bool *newval, void **extra, GucSource source);
@@ -199,6 +195,7 @@ static void assign_effective_io_concurrency(int newval, void *extra);
 static void assign_pgstat_temp_directory(const char *newval, void *extra);
 static bool check_application_name(char **newval, void **extra, GucSource source);
 static void assign_application_name(const char *newval, void *extra);
+static bool check_cluster_name(char **newval, void **extra, GucSource source);
 static const char *show_unix_socket_permissions(void);
 static const char *show_log_file_mode(void);
 
@@ -413,11 +410,6 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 /*
  * GUC option variables that are exported from this module
  */
-#ifdef USE_ASSERT_CHECKING
-bool		assert_enabled = true;
-#else
-bool		assert_enabled = false;
-#endif
 bool		log_duration = false;
 bool		Debug_print_plan = false;
 bool		Debug_print_parse = false;
@@ -449,6 +441,7 @@ int			temp_file_limit = -1;
 
 int			num_temp_buffers = 1024;
 
+char	   *cluster_name = "";
 char	   *data_directory;
 char	   *ConfigFileName;
 char	   *HbaFileName;
@@ -500,6 +493,7 @@ static bool data_checksums;
 static int	wal_segment_size;
 static bool integer_datetimes;
 static int	effective_io_concurrency;
+static bool	assert_enabled;
 
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
@@ -931,10 +925,10 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"debug_assertions", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Turns on various assertion checks."),
-			gettext_noop("This is a debugging aid."),
-			GUC_NOT_IN_SAMPLE
+		{"debug_assertions", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Shows whether the running server has assertion checks enabled."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&assert_enabled,
 #ifdef USE_ASSERT_CHECKING
@@ -942,7 +936,7 @@ static struct config_bool ConfigureNamesBool[] =
 #else
 		false,
 #endif
-		check_debug_assertions, NULL, NULL
+		NULL, NULL, NULL
 	},
 
 	{
@@ -3022,7 +3016,7 @@ static struct config_string ConfigureNamesString[] =
 			NULL
 		},
 		&event_source,
-		"PostgreSQL",
+		DEFAULT_EVENT_SOURCE,
 		NULL, NULL, NULL
 	},
 
@@ -3095,10 +3089,14 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
+		/*
+		 * Can't be set by ALTER SYSTEM as it can lead to recursive definition
+		 * of data_directory.
+		 */
 		{"data_directory", PGC_POSTMASTER, FILE_LOCATIONS,
 			gettext_noop("Sets the server's data directory."),
 			NULL,
-			GUC_SUPERUSER_ONLY
+			GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE
 		},
 		&data_directory,
 		NULL,
@@ -3260,6 +3258,17 @@ static struct config_string ConfigureNamesString[] =
 		&application_name,
 		"",
 		check_application_name, assign_application_name, NULL
+	},
+
+	{
+		{"cluster_name", PGC_POSTMASTER, LOGGING_WHAT,
+			gettext_noop("Sets the name of the cluster which is included in the process title."),
+			NULL,
+			GUC_IS_NAME
+		},
+		&cluster_name,
+		"",
+		check_cluster_name, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -4330,6 +4339,13 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 		return false;
 	}
 
+	/*
+	 * Read the configuration file for the first time. This time only
+	 * data_directory parameter is picked up to determine the data directory
+	 * so that we can read PG_AUTOCONF_FILENAME file next time. Then don't
+	 * forget to read the configuration file again later to pick up all the
+	 * parameters.
+	 */
 	ProcessConfigFile(PGC_POSTMASTER);
 
 	/*
@@ -6735,12 +6751,17 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 			   errmsg("unrecognized configuration parameter \"%s\"", name)));
 
+	/*
+	 * Don't allow the parameters which can't be set in configuration
+	 * files to be set in PG_AUTOCONF_FILENAME file.
+	 */
 	if ((record->context == PGC_INTERNAL) ||
-		(record->flags & GUC_DISALLOW_IN_FILE))
-		ereport(ERROR,
-				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
-				 errmsg("parameter \"%s\" cannot be changed",
-						name)));
+		(record->flags & GUC_DISALLOW_IN_FILE) ||
+		(record->flags & GUC_DISALLOW_IN_AUTO_FILE))
+		 ereport(ERROR,
+				 (errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+				  errmsg("parameter \"%s\" cannot be changed",
+						 name)));
 
 	if (!validate_conf_option(record, name, value, PGC_S_FILE,
 							  ERROR, true, NULL,
@@ -9109,19 +9130,6 @@ check_phony_autocommit(bool *newval, void **extra, GucSource source)
 }
 
 static bool
-check_debug_assertions(bool *newval, void **extra, GucSource source)
-{
-#ifndef USE_ASSERT_CHECKING
-	if (*newval)
-	{
-		GUC_check_errmsg("assertion checking is not supported by this build");
-		return false;
-	}
-#endif
-	return true;
-}
-
-static bool
 check_bonjour(bool *newval, void **extra, GucSource source)
 {
 #ifndef USE_BONJOUR
@@ -9477,6 +9485,21 @@ assign_application_name(const char *newval, void *extra)
 {
 	/* Update the pg_stat_activity view */
 	pgstat_report_appname(newval);
+}
+
+static bool
+check_cluster_name(char **newval, void **extra, GucSource source)
+{
+	/* Only allow clean ASCII chars in the cluster name */
+	char	   *p;
+
+	for (p = *newval; *p; p++)
+	{
+		if (*p < 32 || *p > 126)
+			*p = '?';
+	}
+
+	return true;
 }
 
 static const char *

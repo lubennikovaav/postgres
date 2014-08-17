@@ -382,6 +382,7 @@ static bool
 _equalSubLink(const SubLink *a, const SubLink *b)
 {
 	COMPARE_SCALAR_FIELD(subLinkType);
+	COMPARE_SCALAR_FIELD(subLinkId);
 	COMPARE_NODE_FIELD(testexpr);
 	COMPARE_NODE_FIELD(operName);
 	COMPARE_NODE_FIELD(subselect);
@@ -1768,6 +1769,19 @@ _equalCreateForeignTableStmt(const CreateForeignTableStmt *a, const CreateForeig
 }
 
 static bool
+_equalImportForeignSchemaStmt(const ImportForeignSchemaStmt *a, const ImportForeignSchemaStmt *b)
+{
+	COMPARE_STRING_FIELD(server_name);
+	COMPARE_STRING_FIELD(remote_schema);
+	COMPARE_STRING_FIELD(local_schema);
+	COMPARE_SCALAR_FIELD(list_type);
+	COMPARE_NODE_FIELD(table_list);
+	COMPARE_NODE_FIELD(options);
+
+	return true;
+}
+
+static bool
 _equalCreateTrigStmt(const CreateTrigStmt *a, const CreateTrigStmt *b)
 {
 	COMPARE_STRING_FIELD(trigname);
@@ -2090,6 +2104,16 @@ _equalResTarget(const ResTarget *a, const ResTarget *b)
 	COMPARE_NODE_FIELD(indirection);
 	COMPARE_NODE_FIELD(val);
 	COMPARE_LOCATION_FIELD(location);
+
+	return true;
+}
+
+static bool
+_equalMultiAssignRef(const MultiAssignRef *a, const MultiAssignRef *b)
+{
+	COMPARE_NODE_FIELD(source);
+	COMPARE_SCALAR_FIELD(colno);
+	COMPARE_SCALAR_FIELD(ncolumns);
 
 	return true;
 }
@@ -2932,6 +2956,9 @@ equal(const void *a, const void *b)
 		case T_CreateForeignTableStmt:
 			retval = _equalCreateForeignTableStmt(a, b);
 			break;
+		case T_ImportForeignSchemaStmt:
+			retval = _equalImportForeignSchemaStmt(a, b);
+			break;
 		case T_CreateTrigStmt:
 			retval = _equalCreateTrigStmt(a, b);
 			break;
@@ -3028,6 +3055,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_ResTarget:
 			retval = _equalResTarget(a, b);
+			break;
+		case T_MultiAssignRef:
+			retval = _equalMultiAssignRef(a, b);
 			break;
 		case T_TypeCast:
 			retval = _equalTypeCast(a, b);

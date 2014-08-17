@@ -49,6 +49,7 @@
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/large_object.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/predicate.h"
@@ -59,6 +60,7 @@
 #include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -735,6 +737,10 @@ static bool bgwriterLaunched = false;
 static int	MyLockNo = 0;
 static bool holdingAllLocks = false;
 
+#ifdef WAL_DEBUG
+static MemoryContext walDebugCxt = NULL;
+#endif
+
 static void readRecoveryCommandFile(void);
 static void exitArchiveRecovery(TimeLineID endTLI, XLogSegNo endLogSegNo);
 static bool recoveryStopsBefore(XLogRecord *record);
@@ -1257,6 +1263,7 @@ begin:;
 	if (XLOG_DEBUG)
 	{
 		StringInfoData buf;
+		MemoryContext oldCxt = MemoryContextSwitchTo(walDebugCxt);
 
 		initStringInfo(&buf);
 		appendStringInfo(&buf, "INSERT @ %X/%X: ",
@@ -1275,15 +1282,17 @@ begin:;
 			rdt_lastnormal->next = NULL;
 
 			initStringInfo(&recordbuf);
+			appendBinaryStringInfo(&recordbuf, (char *) rechdr, sizeof(XLogRecord));
 			for (; rdata != NULL; rdata = rdata->next)
 				appendBinaryStringInfo(&recordbuf, rdata->data, rdata->len);
 
 			appendStringInfoString(&buf, " - ");
-			RmgrTable[rechdr->xl_rmid].rm_desc(&buf, rechdr->xl_info, recordbuf.data);
-			pfree(recordbuf.data);
+			RmgrTable[rechdr->xl_rmid].rm_desc(&buf, (XLogRecord *) recordbuf.data);
 		}
 		elog(LOG, "%s", buf.data);
-		pfree(buf.data);
+
+		MemoryContextSwitchTo(oldCxt);
+		MemoryContextReset(walDebugCxt);
 	}
 #endif
 
@@ -4075,7 +4084,14 @@ RestoreBackupBlockContents(XLogRecPtr lsn, BkpBlock bkpb, char *blk,
 	 * reset it here since it will be set before being written.
 	 */
 
-	PageSetLSN(page, lsn);
+	/*
+	 * The page may be uninitialized. If so, we can't set the LSN because that
+	 * would corrupt the page.
+	 */
+	if (!PageIsNew(page))
+	{
+		PageSetLSN(page, lsn);
+	}
 	MarkBufferDirty(buffer);
 
 	if (!keep_buffer)
@@ -4352,6 +4368,7 @@ WriteControlFile(void)
 	ControlFile->indexMaxKeys = INDEX_MAX_KEYS;
 
 	ControlFile->toast_max_chunk_size = TOAST_MAX_CHUNK_SIZE;
+	ControlFile->loblksize = LOBLKSIZE;
 
 #ifdef HAVE_INT64_TIMESTAMP
 	ControlFile->enableIntTimes = true;
@@ -4544,6 +4561,13 @@ ReadControlFile(void)
 				 errdetail("The database cluster was initialized with TOAST_MAX_CHUNK_SIZE %d,"
 				" but the server was compiled with TOAST_MAX_CHUNK_SIZE %d.",
 			  ControlFile->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (ControlFile->loblksize != LOBLKSIZE)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+		  errdetail("The database cluster was initialized with LOBLKSIZE %d,"
+					" but the server was compiled with LOBLKSIZE %d.",
+					ControlFile->loblksize, (int) LOBLKSIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 
 #ifdef HAVE_INT64_TIMESTAMP
@@ -4797,6 +4821,24 @@ XLOGShmemInit(void)
 	char	   *allocptr;
 	int			i;
 
+#ifdef WAL_DEBUG
+	/*
+	 * Create a memory context for WAL debugging that's exempt from the
+	 * normal "no pallocs in critical section" rule. Yes, that can lead to a
+	 * PANIC if an allocation fails, but wal_debug is not for production use
+	 * anyway.
+	 */
+	if (walDebugCxt == NULL)
+	{
+		walDebugCxt = AllocSetContextCreate(TopMemoryContext,
+											"WAL Debug",
+											ALLOCSET_DEFAULT_MINSIZE,
+											ALLOCSET_DEFAULT_INITSIZE,
+											ALLOCSET_DEFAULT_MAXSIZE);
+		MemoryContextAllowInCriticalSection(walDebugCxt, true);
+	}
+#endif
+
 	ControlFile = (ControlFileData *)
 		ShmemInitStruct("Control File", sizeof(ControlFileData), &foundCFile);
 	XLogCtl = (XLogCtlData *)
@@ -4806,6 +4848,11 @@ XLOGShmemInit(void)
 	{
 		/* both should be present or neither */
 		Assert(foundCFile && foundXLog);
+
+		/* Initialize local copy of WALInsertLocks and register the tranche */
+		WALInsertLocks = XLogCtl->Insert.WALInsertLocks;
+		LWLockRegisterTranche(XLogCtl->Insert.WALInsertLockTrancheId,
+							  &XLogCtl->Insert.WALInsertLockTranche);
 		return;
 	}
 	memset(XLogCtl, 0, sizeof(XLogCtlData));
@@ -5221,12 +5268,12 @@ readRecoveryCommandFile(void)
 					(errmsg_internal("primary_conninfo = '%s'",
 									 PrimaryConnInfo)));
 		}
-		else if (strcmp(item->name, "primary_slotname") == 0)
+		else if (strcmp(item->name, "primary_slot_name") == 0)
 		{
 			ReplicationSlotValidateName(item->value, ERROR);
 			PrimarySlotName = pstrdup(item->value);
 			ereport(DEBUG2,
-					(errmsg_internal("primary_slotname = '%s'",
+					(errmsg_internal("primary_slot_name = '%s'",
 									 PrimarySlotName)));
 		}
 		else if (strcmp(item->name, "trigger_file") == 0)
@@ -5417,9 +5464,19 @@ getRecordTimestamp(XLogRecord *record, TimestampTz *recordXtime)
 		*recordXtime = ((xl_xact_commit *) XLogRecGetData(record))->xact_time;
 		return true;
 	}
+	if (record->xl_rmid == RM_XACT_ID && record_info == XLOG_XACT_COMMIT_PREPARED)
+	{
+		*recordXtime = ((xl_xact_commit_prepared *) XLogRecGetData(record))->crec.xact_time;
+		return true;
+	}
 	if (record->xl_rmid == RM_XACT_ID && record_info == XLOG_XACT_ABORT)
 	{
 		*recordXtime = ((xl_xact_abort *) XLogRecGetData(record))->xact_time;
+		return true;
+	}
+	if (record->xl_rmid == RM_XACT_ID && record_info == XLOG_XACT_ABORT_PREPARED)
+	{
+		*recordXtime = ((xl_xact_abort_prepared *) XLogRecGetData(record))->arec.xact_time;
 		return true;
 	}
 	return false;
@@ -5440,6 +5497,7 @@ recoveryStopsBefore(XLogRecord *record)
 	uint8		record_info;
 	bool		isCommit;
 	TimestampTz recordXtime = 0;
+	TransactionId recordXid;
 
 	/* Check if we should stop as soon as reaching consistency */
 	if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE && reachedConsistency)
@@ -5458,10 +5516,27 @@ recoveryStopsBefore(XLogRecord *record)
 	if (record->xl_rmid != RM_XACT_ID)
 		return false;
 	record_info = record->xl_info & ~XLR_INFO_MASK;
+
 	if (record_info == XLOG_XACT_COMMIT_COMPACT || record_info == XLOG_XACT_COMMIT)
+	{
 		isCommit = true;
+		recordXid = record->xl_xid;
+	}
+	else if (record_info == XLOG_XACT_COMMIT_PREPARED)
+	{
+		isCommit = true;
+		recordXid = ((xl_xact_commit_prepared *) XLogRecGetData(record))->xid;
+	}
 	else if (record_info == XLOG_XACT_ABORT)
+	{
 		isCommit = false;
+		recordXid = record->xl_xid;
+	}
+	else if (record_info == XLOG_XACT_ABORT_PREPARED)
+	{
+		isCommit = false;
+		recordXid = ((xl_xact_abort_prepared *) XLogRecGetData(record))->xid;
+	}
 	else
 		return false;
 
@@ -5476,7 +5551,7 @@ recoveryStopsBefore(XLogRecord *record)
 		 * they complete. A higher numbered xid will complete before you about
 		 * 50% of the time...
 		 */
-		stopsHere = (record->xl_xid == recoveryTargetXid);
+		stopsHere = (recordXid == recoveryTargetXid);
 	}
 
 	if (recoveryTarget == RECOVERY_TARGET_TIME &&
@@ -5496,7 +5571,7 @@ recoveryStopsBefore(XLogRecord *record)
 	if (stopsHere)
 	{
 		recoveryStopAfter = false;
-		recoveryStopXid = record->xl_xid;
+		recoveryStopXid = recordXid;
 		recoveryStopTime = recordXtime;
 		recoveryStopName[0] = '\0';
 
@@ -5562,11 +5637,23 @@ recoveryStopsAfter(XLogRecord *record)
 	if (record->xl_rmid == RM_XACT_ID &&
 		(record_info == XLOG_XACT_COMMIT_COMPACT ||
 		 record_info == XLOG_XACT_COMMIT ||
-		 record_info == XLOG_XACT_ABORT))
+		 record_info == XLOG_XACT_COMMIT_PREPARED ||
+		 record_info == XLOG_XACT_ABORT ||
+		 record_info == XLOG_XACT_ABORT_PREPARED))
 	{
+		TransactionId recordXid;
+
 		/* Update the last applied transaction timestamp */
 		if (getRecordTimestamp(record, &recordXtime))
 			SetLatestXTime(recordXtime);
+
+		/* Extract the XID of the committed/aborted transaction */
+		if (record_info == XLOG_XACT_COMMIT_PREPARED)
+			recordXid = ((xl_xact_commit_prepared *) XLogRecGetData(record))->xid;
+		else if (record_info == XLOG_XACT_ABORT_PREPARED)
+			recordXid = ((xl_xact_abort_prepared *) XLogRecGetData(record))->xid;
+		else
+			recordXid = record->xl_xid;
 
 		/*
 		 * There can be only one transaction end record with this exact
@@ -5578,21 +5665,24 @@ recoveryStopsAfter(XLogRecord *record)
 		 * 50% of the time...
 		 */
 		if (recoveryTarget == RECOVERY_TARGET_XID && recoveryTargetInclusive &&
-			record->xl_xid == recoveryTargetXid)
+			recordXid == recoveryTargetXid)
 		{
 			recoveryStopAfter = true;
-			recoveryStopXid = record->xl_xid;
+			recoveryStopXid = recordXid;
 			recoveryStopTime = recordXtime;
 			recoveryStopName[0] = '\0';
 
-			if (record_info == XLOG_XACT_COMMIT_COMPACT || record_info == XLOG_XACT_COMMIT)
+			if (record_info == XLOG_XACT_COMMIT_COMPACT ||
+				record_info == XLOG_XACT_COMMIT ||
+				record_info == XLOG_XACT_COMMIT_PREPARED)
 			{
 				ereport(LOG,
 						(errmsg("recovery stopping after commit of transaction %u, time %s",
 								recoveryStopXid,
 								timestamptz_to_str(recoveryStopTime))));
 			}
-			else if (record_info == XLOG_XACT_ABORT)
+			else if (record_info == XLOG_XACT_ABORT ||
+					 record_info == XLOG_XACT_ABORT_PREPARED)
 			{
 				ereport(LOG,
 						(errmsg("recovery stopping after abort of transaction %u, time %s",
@@ -5705,7 +5795,8 @@ recoveryApplyDelay(XLogRecord *record)
 	record_info = record->xl_info & ~XLR_INFO_MASK;
 	if (!(record->xl_rmid == RM_XACT_ID &&
 		  (record_info == XLOG_XACT_COMMIT_COMPACT ||
-		   record_info == XLOG_XACT_COMMIT)))
+		   record_info == XLOG_XACT_COMMIT ||
+		   record_info == XLOG_XACT_COMMIT_PREPARED)))
 		return false;
 
 	if (!getRecordTimestamp(record, &xtime))
@@ -6254,6 +6345,7 @@ StartupXLOG(void)
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
 	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
+	MultiXactSetSafeTruncate(checkPoint.oldestMulti);
 	XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
 	XLogCtl->ckptXid = checkPoint.nextXid;
 
@@ -6261,7 +6353,7 @@ StartupXLOG(void)
 	 * Initialize replication slots, before there's a chance to remove
 	 * required resources.
 	 */
-	StartupReplicationSlots(checkPoint.redo);
+	StartupReplicationSlots();
 
 	/*
 	 * Startup logical state, needs to be setup now so we have proper data
@@ -6618,9 +6710,7 @@ StartupXLOG(void)
 							 (uint32) (EndRecPtr >> 32), (uint32) EndRecPtr);
 					xlog_outrec(&buf, record);
 					appendStringInfoString(&buf, " - ");
-					RmgrTable[record->xl_rmid].rm_desc(&buf,
-													   record->xl_info,
-													 XLogRecGetData(record));
+					RmgrTable[record->xl_rmid].rm_desc(&buf, record);
 					elog(LOG, "%s", buf.data);
 					pfree(buf.data);
 				}
@@ -7585,11 +7675,6 @@ InitXLOGAccess(void)
 	ThisTimeLineID = XLogCtl->ThisTimeLineID;
 	Assert(ThisTimeLineID != 0 || IsBootstrapProcessingMode());
 
-	/* Initialize our copy of WALInsertLocks and register the tranche */
-	WALInsertLocks = XLogCtl->Insert.WALInsertLocks;
-	LWLockRegisterTranche(XLogCtl->Insert.WALInsertLockTrancheId,
-						  &XLogCtl->Insert.WALInsertLockTranche);
-
 	/* Use GetRedoRecPtr to copy the RedoRecPtr safely */
 	(void) GetRedoRecPtr();
 }
@@ -8265,6 +8350,12 @@ CreateCheckPoint(int flags)
 	END_CRIT_SECTION();
 
 	/*
+	 * Now that the checkpoint is safely on disk, we can update the point to
+	 * which multixact can be truncated.
+	 */
+	MultiXactSetSafeTruncate(checkPoint.oldestMulti);
+
+	/*
 	 * Let smgr do post-checkpoint cleanup (eg, deleting old files).
 	 */
 	smgrpostckpt();
@@ -8296,6 +8387,11 @@ CreateCheckPoint(int flags)
 	 */
 	if (!RecoveryInProgress())
 		TruncateSUBTRANS(GetOldestXmin(NULL, false));
+
+	/*
+	 * Truncate pg_multixact too.
+	 */
+	TruncateMultiXact();
 
 	/* Real work is done, but log and update stats before releasing lock. */
 	LogCheckpointEnd(false);
@@ -8571,21 +8667,6 @@ CreateRestartPoint(int flags)
 	LWLockRelease(ControlFileLock);
 
 	/*
-	 * Due to an historical accident multixact truncations are not WAL-logged,
-	 * but just performed everytime the mxact horizon is increased. So, unless
-	 * we explicitly execute truncations on a standby it will never clean out
-	 * /pg_multixact which obviously is bad, both because it uses space and
-	 * because we can wrap around into pre-existing data...
-	 *
-	 * We can only do the truncation here, after the UpdateControlFile()
-	 * above, because we've now safely established a restart point, that
-	 * guarantees we will not need need to access those multis.
-	 *
-	 * It's probably worth improving this.
-	 */
-	TruncateMultiXact(lastCheckPoint.oldestMulti);
-
-	/*
 	 * Delete old log files (those no longer needed even for previous
 	 * checkpoint/restartpoint) to prevent the disk holding the xlog from
 	 * growing full.
@@ -8642,6 +8723,21 @@ CreateRestartPoint(int flags)
 		if (RecoveryInProgress())
 			ThisTimeLineID = 0;
 	}
+
+	/*
+	 * Due to an historical accident multixact truncations are not WAL-logged,
+	 * but just performed everytime the mxact horizon is increased. So, unless
+	 * we explicitly execute truncations on a standby it will never clean out
+	 * /pg_multixact which obviously is bad, both because it uses space and
+	 * because we can wrap around into pre-existing data...
+	 *
+	 * We can only do the truncation here, after the UpdateControlFile()
+	 * above, because we've now safely established a restart point.  That
+	 * guarantees we will not need to access those multis.
+	 *
+	 * It's probably worth improving this.
+	 */
+	TruncateMultiXact();
 
 	/*
 	 * Truncate pg_subtrans if possible.  We can throw away all data before
@@ -8900,6 +8996,128 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 }
 
 /*
+ * Write a WAL record containing a full image of a page. Caller is responsible
+ * for writing the page to disk after calling this routine.
+ *
+ * Note: If you're using this function, you should be building pages in private
+ * memory and writing them directly to smgr.  If you're using buffers, call
+ * log_newpage_buffer instead.
+ *
+ * If the page follows the standard page layout, with a PageHeader and unused
+ * space between pd_lower and pd_upper, set 'page_std' to TRUE. That allows
+ * the unused space to be left out from the WAL record, making it smaller.
+ */
+XLogRecPtr
+log_newpage(RelFileNode *rnode, ForkNumber forkNum, BlockNumber blkno,
+			Page page, bool page_std)
+{
+	BkpBlock	bkpb;
+	XLogRecPtr	recptr;
+	XLogRecData rdata[3];
+
+	/* NO ELOG(ERROR) from here till newpage op is logged */
+	START_CRIT_SECTION();
+
+	bkpb.node = *rnode;
+	bkpb.fork = forkNum;
+	bkpb.block = blkno;
+
+	if (page_std)
+	{
+		/* Assume we can omit data between pd_lower and pd_upper */
+		uint16		lower = ((PageHeader) page)->pd_lower;
+		uint16		upper = ((PageHeader) page)->pd_upper;
+
+		if (lower >= SizeOfPageHeaderData &&
+			upper > lower &&
+			upper <= BLCKSZ)
+		{
+			bkpb.hole_offset = lower;
+			bkpb.hole_length = upper - lower;
+		}
+		else
+		{
+			/* No "hole" to compress out */
+			bkpb.hole_offset = 0;
+			bkpb.hole_length = 0;
+		}
+	}
+	else
+	{
+		/* Not a standard page header, don't try to eliminate "hole" */
+		bkpb.hole_offset = 0;
+		bkpb.hole_length = 0;
+	}
+
+	rdata[0].data = (char *) &bkpb;
+	rdata[0].len = sizeof(BkpBlock);
+	rdata[0].buffer = InvalidBuffer;
+	rdata[0].next = &(rdata[1]);
+
+	if (bkpb.hole_length == 0)
+	{
+		rdata[1].data = (char *) page;
+		rdata[1].len = BLCKSZ;
+		rdata[1].buffer = InvalidBuffer;
+		rdata[1].next = NULL;
+	}
+	else
+	{
+		/* must skip the hole */
+		rdata[1].data = (char *) page;
+		rdata[1].len = bkpb.hole_offset;
+		rdata[1].buffer = InvalidBuffer;
+		rdata[1].next = &rdata[2];
+
+		rdata[2].data = (char *) page + (bkpb.hole_offset + bkpb.hole_length);
+		rdata[2].len = BLCKSZ - (bkpb.hole_offset + bkpb.hole_length);
+		rdata[2].buffer = InvalidBuffer;
+		rdata[2].next = NULL;
+	}
+
+	recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI, rdata);
+
+	/*
+	 * The page may be uninitialized. If so, we can't set the LSN because that
+	 * would corrupt the page.
+	 */
+	if (!PageIsNew(page))
+	{
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	return recptr;
+}
+
+/*
+ * Write a WAL record containing a full image of a page.
+ *
+ * Caller should initialize the buffer and mark it dirty before calling this
+ * function.  This function will set the page LSN.
+ *
+ * If the page follows the standard page layout, with a PageHeader and unused
+ * space between pd_lower and pd_upper, set 'page_std' to TRUE. That allows
+ * the unused space to be left out from the WAL record, making it smaller.
+ */
+XLogRecPtr
+log_newpage_buffer(Buffer buffer, bool page_std)
+{
+	Page		page = BufferGetPage(buffer);
+	RelFileNode rnode;
+	ForkNumber	forkNum;
+	BlockNumber blkno;
+
+	/* Shared buffers should be modified in a critical section. */
+	Assert(CritSectionCount > 0);
+
+	BufferGetTag(buffer, &rnode, &forkNum, &blkno);
+
+	return log_newpage(&rnode, forkNum, blkno, page, page_std);
+}
+
+/*
  * Check if any of the GUC parameters that are critical for hot standby
  * have changed, and update the value in pg_control file if necessary.
  */
@@ -9109,6 +9327,7 @@ xlog_redo(XLogRecPtr lsn, XLogRecord *record)
 							  checkPoint.nextMultiOffset);
 		SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
 		SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
+		MultiXactSetSafeTruncate(checkPoint.oldestMulti);
 
 		/*
 		 * If we see a shutdown checkpoint while waiting for an end-of-backup
@@ -9209,6 +9428,7 @@ xlog_redo(XLogRecPtr lsn, XLogRecord *record)
 								  checkPoint.oldestXidDB);
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
+		MultiXactSetSafeTruncate(checkPoint.oldestMulti);
 
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
@@ -9616,7 +9836,7 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			  errmsg("WAL level not sufficient for making an online backup"),
-				 errhint("wal_level must be set to \"archive\", \"hot_standby\" or \"logical\" at server start.")));
+				 errhint("wal_level must be set to \"archive\", \"hot_standby\", or \"logical\" at server start.")));
 
 	if (strlen(backupidstr) > MAXPGPATH)
 		ereport(ERROR,
@@ -9952,7 +10172,7 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			  errmsg("WAL level not sufficient for making an online backup"),
-				 errhint("wal_level must be set to \"archive\", \"hot_standby\" or \"logical\" at server start.")));
+				 errhint("wal_level must be set to \"archive\", \"hot_standby\", or \"logical\" at server start.")));
 
 	/*
 	 * OK to update backup counters and forcePageWrites
@@ -10444,9 +10664,7 @@ rm_redo_error_callback(void *arg)
 	StringInfoData buf;
 
 	initStringInfo(&buf);
-	RmgrTable[record->xl_rmid].rm_desc(&buf,
-									   record->xl_info,
-									   XLogRecGetData(record));
+	RmgrTable[record->xl_rmid].rm_desc(&buf, record);
 
 	/* don't bother emitting empty description */
 	if (buf.len > 0)

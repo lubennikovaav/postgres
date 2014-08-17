@@ -238,9 +238,9 @@ include 'filename'
         The <filename>postgresql.conf</> file can also contain
         <literal>include_dir</literal> directives, which specify an entire directory
         of configuration files to include.  It is used similarly:
- <programlisting>
- include_dir 'directory'
- </programlisting>
+<programlisting>
+include_dir 'directory'
+</programlisting>
         Non-absolute directory names follow the same rules as single file include
         directives:  they are relative to the directory containing the referencing
         configuration file.  Within that directory, only non-directory files whose
@@ -263,11 +263,11 @@ include 'filename'
        situation is to break the custom configuration changes for your site into
        three files.  You could add this to the end of your
        <filename>postgresql.conf</> file to include them:
- <programlisting>
- include 'shared.conf'
- include 'memory.conf'
- include 'server.conf'
- </programlisting>
+<programlisting>
+include 'shared.conf'
+include 'memory.conf'
+include 'server.conf'
+</programlisting>
        All systems would have the same <filename>shared.conf</>.  Each server
        with a particular amount of memory could share the same
        <filename>memory.conf</>; you might have one for all servers with 8GB of RAM,
@@ -279,15 +279,15 @@ include 'filename'
        Another possibility is to create a configuration file directory and
        put this information into files there. For example, a <filename>conf.d</>
        directory could be referenced at the end of<filename>postgresql.conf</>:
- <screen>
- include_dir 'conf.d'
- </screen>
+<programlisting>
+include_dir 'conf.d'
+</programlisting>
        Then you could name the files in the <filename>conf.d</> directory like this:
- <screen>
- 00shared.conf
- 01memory.conf
- 02server.conf
- </screen>
+<programlisting>
+00shared.conf
+01memory.conf
+02server.conf
+</programlisting>
        This shows a clear order in which these files will be loaded.  This is
        important because only the last setting encountered when the server is
        reading its configuration will be used.  Something set in
@@ -298,11 +298,11 @@ include 'filename'
      <para>
        You might instead use this configuration directory approach while naming
        these files more descriptively:
- <screen>
- 00shared.conf
- 01memory-8GB.conf
- 02server-foo.conf
- </screen>
+<programlisting>
+00shared.conf
+01memory-8GB.conf
+02server-foo.conf
+</programlisting>
        This sort of arrangement gives a unique name for each configuration file
        variation.  This can help eliminate ambiguity when several servers have
        their configurations all stored in one place, such as in a version
@@ -1020,13 +1020,23 @@ include 'filename'
       </term>
       <listitem>
        <para>
-        Specifies the name of the curve to use in ECDH key exchanges.  The
-        default is <literal>prime256p1</>.
+        Specifies the name of the curve to use in <acronym>ECDH</> key
+        exchange.  It needs to be supported by all clients that connect.
+        It does not need to be same curve as used by server's Elliptic
+        Curve key.  The default is <literal>prime256v1</>.
        </para>
 
        <para>
-        The list of available curves can be shown with the command
-        <literal>openssl ecparam -list_curves</literal>.
+        OpenSSL names for most common curves:
+        <literal>prime256v1</> (NIST P-256),
+        <literal>secp384r1</> (NIST P-384),
+        <literal>secp521r1</> (NIST P-521).
+       </para>
+
+       <para>
+        The full list of available curves can be shown with the command
+        <command>openssl ecparam -list_curves</command>.  Not all of them
+        are usable in <acronym>TLS</> though.
        </para>
       </listitem>
      </varlistentry>
@@ -2479,7 +2489,7 @@ include 'filename'
        <listitem>
         <para>
          Specifies the maximum number of replication slots
-         (see <xref linkend="streaming-replication-slots"> that the server
+         (see <xref linkend="streaming-replication-slots">) that the server
          can support. The default is zero.  This parameter can only be set at
          server start.
          <varname>wal_level</varname> must be set
@@ -2593,7 +2603,7 @@ include 'filename'
        <para>
         The name of a standby server for this purpose is the
         <varname>application_name</> setting of the standby, as set in the
-        <varname>primary_conninfo</> of the standby's walreceiver.  There is
+        <varname>primary_conninfo</> of the standby's WAL receiver.  There is
         no mechanism to enforce uniqueness. In case of duplicates one of the
         matching standbys will be chosen to be the synchronous standby, though
         exactly which one is indeterminate.
@@ -2768,7 +2778,7 @@ include 'filename'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-hot-standby-feedback" xreflabel="hot_standby">
+     <varlistentry id="guc-hot-standby-feedback" xreflabel="hot_standby_feedback">
       <term><varname>hot_standby_feedback</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>hot_standby_feedback</> configuration parameter</primary>
@@ -3657,6 +3667,7 @@ local0.*    /var/log/postgresql
         cluster data directory.
         This parameter can only be set in the <filename>postgresql.conf</>
         file or on the server command line.
+        The default is <literal>pg_log</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -3683,6 +3694,7 @@ local0.*    /var/log/postgresql
         </ulink> specification.
         Note that the system's <systemitem>strftime</systemitem> is not used
         directly, so platform-specific (nonstandard) extensions do not work.
+        The default is <literal>postgresql-%Y-%m-%d_%H%M%S.log</literal>.
        </para>
        <para>
         If you specify a file name without escapes, you should plan to
@@ -3699,8 +3711,6 @@ local0.*    /var/log/postgresql
         log file name to create the file name for CSV-format output.
         (If <varname>log_filename</> ends in <literal>.log</>, the suffix is
         replaced instead.)
-        In the case of the example above, the CSV
-        file name will be <literal>server_log.1093827753.csv</literal>.
        </para>
        <para>
         This parameter can only be set in the <filename>postgresql.conf</>
@@ -4117,6 +4127,30 @@ local0.*    /var/log/postgresql
         Only printable ASCII characters may be used in the
         <varname>application_name</varname> value. Other characters will be
         replaced with question marks (<literal>?</literal>).
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-cluster-name" xreflabel="cluster_name">
+      <term><varname>cluster_name</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>cluster_name</> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the cluster name that appears in the process title for all
+        processes in this cluster. The name can be any string of less than
+        <symbol>NAMEDATALEN</> characters (64 characters in a standard
+        build). Only printable ASCII characters may be used in the
+        <varname>cluster_name</varname> value. Other characters will be
+        replaced with question marks (<literal>?</literal>).  No name is shown
+        if this parameter is set to the empty string <literal>''</> (which is
+        the default). This parameter can only be set at server start.
+       </para>
+       <para>
+        The process title is typically viewed using programs like
+        <application>ps</> or, on Windows, <application>Process Explorer</>.
        </para>
       </listitem>
      </varlistentry>
@@ -6712,6 +6746,26 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-debug-assertions" xreflabel="debug_assertions">
+      <term><varname>debug_assertions</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>debug_assertions</> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Reports whether <productname>PostgreSQL</productname> has been built
+        with assertions enabled. That is the case if the
+        macro <symbol>USE_ASSERT_CHECKING</symbol> is defined
+        when <productname>PostgreSQL</productname> is built (accomplished
+        e.g. by the <command>configure</command> option
+        <option>--enable-cassert</option>). By
+        default <productname>PostgreSQL</productname> is built without
+        assertions.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-integer-datetimes" xreflabel="integer_datetimes">
       <term><varname>integer_datetimes</varname> (<type>boolean</type>)
       <indexterm>
@@ -6959,28 +7013,6 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         Allows modification of the structure of system tables.
         This is used by <command>initdb</command>.
         This parameter can only be set at server start.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-debug-assertions" xreflabel="debug_assertions">
-      <term><varname>debug_assertions</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>debug_assertions</> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Turns on various assertion checks. This is a debugging aid. If
-        you are experiencing strange problems or crashes you might want
-        to turn this on, as it might expose programming mistakes. To use
-        this parameter, the macro <symbol>USE_ASSERT_CHECKING</symbol>
-        must be defined when <productname>PostgreSQL</productname> is
-        built (accomplished by the <command>configure</command> option
-        <option>--enable-cassert</option>). Note that
-        <varname>debug_assertions</varname> defaults to <literal>on</>
-        if <productname>PostgreSQL</productname> has been built with
-        assertions enabled.
        </para>
       </listitem>
      </varlistentry>
@@ -7344,10 +7376,6 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </thead>
 
       <tbody>
-       <row>
-        <entry><option>-A <replaceable>x</replaceable></option></entry>
-        <entry><literal>debug_assertions = <replaceable>x</replaceable></></entry>
-       </row>
        <row>
         <entry><option>-B <replaceable>x</replaceable></option></entry>
         <entry><literal>shared_buffers = <replaceable>x</replaceable></></entry>

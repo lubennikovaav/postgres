@@ -151,7 +151,7 @@ extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 #define LOCK_MANAGER_LWLOCK_OFFSET		\
 	(BUFFER_MAPPING_LWLOCK_OFFSET + NUM_BUFFER_PARTITIONS)
 #define PREDICATELOCK_MANAGER_LWLOCK_OFFSET \
-	(NUM_INDIVIDUAL_LWLOCKS + NUM_LOCK_PARTITIONS)
+	(LOCK_MANAGER_LWLOCK_OFFSET + NUM_LOCK_PARTITIONS)
 #define NUM_FIXED_LWLOCKS \
 	(PREDICATELOCK_MANAGER_LWLOCK_OFFSET + NUM_PREDICATELOCK_PARTITIONS)
 
@@ -182,6 +182,7 @@ extern void LWLockUpdateVar(LWLock *lock, uint64 *valptr, uint64 value);
 
 extern Size LWLockShmemSize(void);
 extern void CreateLWLocks(void);
+extern void InitLWLockAccess(void);
 
 /*
  * The traditional method for obtaining an lwlock for use by an extension is

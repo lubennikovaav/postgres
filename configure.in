@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [9.4beta1], [pgsql-bugs@postgresql.org])
+AC_INIT([PostgreSQL], [9.5devel], [pgsql-bugs@postgresql.org])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -69,7 +69,6 @@ dragonfly*) template=netbsd ;;
    mingw*) template=win32 ;;
   netbsd*) template=netbsd ;;
  openbsd*) template=openbsd ;;
-     osf*) template=osf ;;
      sco*) template=sco ;;
  solaris*) template=solaris ;;
    sysv5*) template=unixware ;;
@@ -658,7 +657,7 @@ AC_MSG_RESULT([$with_bonjour])
 #
 AC_MSG_CHECKING([whether to build with OpenSSL support])
 PGAC_ARG_BOOL(with, openssl, no, [build with OpenSSL support],
-              [AC_DEFINE([USE_SSL], 1, [Define to build with (Open)SSL support. (--with-openssl)])])
+              [AC_DEFINE([USE_OPENSSL], 1, [Define to build with OpenSSL support. (--with-openssl)])])
 AC_MSG_RESULT([$with_openssl])
 AC_SUBST(with_openssl)
 
@@ -694,10 +693,38 @@ PGAC_ARG_BOOL(with, libedit-preferred, no,
 
 
 #
-# OSSP UUID library
+# UUID library
 #
-PGAC_ARG_BOOL(with, ossp-uuid, no, [build contrib/uuid-ossp, requires OSSP UUID library])
-AC_SUBST(with_ossp_uuid)
+# There are at least three UUID libraries in common use: the FreeBSD/NetBSD
+# library, the e2fsprogs libuuid (now part of util-linux-ng), and the OSSP
+# UUID library.  More than one of these might be present on a given platform,
+# so we make the user say which one she wants.
+#
+PGAC_ARG_REQ(with, uuid, [LIB], [build contrib/uuid-ossp using LIB (bsd,e2fs,ossp)])
+if test x"$with_uuid" = x"" ; then
+  with_uuid=no
+fi
+PGAC_ARG_BOOL(with, ossp-uuid, no, [obsolete spelling of --with-uuid=ossp])
+if test "$with_ossp_uuid" = yes ; then
+  with_uuid=ossp
+fi
+
+if test "$with_uuid" = bsd ; then
+  AC_DEFINE([HAVE_UUID_BSD], 1, [Define to 1 if you have BSD UUID support.])
+  UUID_EXTRA_OBJS="md5.o sha1.o"
+elif test "$with_uuid" = e2fs ; then
+  AC_DEFINE([HAVE_UUID_E2FS], 1, [Define to 1 if you have E2FS UUID support.])
+  UUID_EXTRA_OBJS="md5.o sha1.o"
+elif test "$with_uuid" = ossp ; then
+  AC_DEFINE([HAVE_UUID_OSSP], 1, [Define to 1 if you have OSSP UUID support.])
+  UUID_EXTRA_OBJS=""
+elif test "$with_uuid" = no ; then
+  UUID_EXTRA_OBJS=""
+else
+  AC_MSG_ERROR([--with-uuid must specify one of bsd, e2fs, or ossp])
+fi
+AC_SUBST(with_uuid)
+AC_SUBST(UUID_EXTRA_OBJS)
 
 
 #
@@ -864,7 +891,7 @@ fi
 AC_CHECK_LIB(m, main)
 AC_SEARCH_LIBS(setproctitle, util)
 AC_SEARCH_LIBS(dlopen, dl)
-AC_SEARCH_LIBS(socket, [socket wsock32])
+AC_SEARCH_LIBS(socket, [socket ws2_32])
 AC_SEARCH_LIBS(shl_load, dld)
 # We only use libld in port/dynloader/aix.c
 case $host_os in
@@ -927,6 +954,7 @@ if test "$with_openssl" = yes ; then
      AC_SEARCH_LIBS(CRYPTO_new_ex_data, eay32 crypto, [], [AC_MSG_ERROR([library 'eay32' or 'crypto' is required for OpenSSL])])
      AC_SEARCH_LIBS(SSL_library_init, ssleay32 ssl, [], [AC_MSG_ERROR([library 'ssleay32' or 'ssl' is required for OpenSSL])])
   fi
+  AC_CHECK_FUNCS([SSL_get_current_compression])
 fi
 
 if test "$with_pam" = yes ; then
@@ -948,14 +976,26 @@ if test "$with_selinux" = yes; then
 fi
 
 # for contrib/uuid-ossp
-if test "$with_ossp_uuid" = yes ; then
+if test "$with_uuid" = bsd ; then
+  # On BSD, the UUID functions are in libc
+  AC_CHECK_FUNC(uuid_to_string,
+    [UUID_LIBS=""],
+    [AC_MSG_ERROR([BSD UUID functions are not present])])
+elif test "$with_uuid" = e2fs ; then
+  # On OS X, the UUID functions are in libc
+  AC_CHECK_FUNC(uuid_generate,
+    [UUID_LIBS=""],
+    [AC_CHECK_LIB(uuid, uuid_generate,
+      [UUID_LIBS="-luuid"],
+      [AC_MSG_ERROR([library 'uuid' is required for E2FS UUID])])])
+elif test "$with_uuid" = ossp ; then
   AC_CHECK_LIB(ossp-uuid, uuid_export,
-    [OSSP_UUID_LIBS="-lossp-uuid"],
+    [UUID_LIBS="-lossp-uuid"],
     [AC_CHECK_LIB(uuid, uuid_export,
-      [OSSP_UUID_LIBS="-luuid"],
-      [AC_MSG_ERROR([library 'ossp-uuid' or 'uuid' is required for OSSP-UUID])])])
+      [UUID_LIBS="-luuid"],
+      [AC_MSG_ERROR([library 'ossp-uuid' or 'uuid' is required for OSSP UUID])])])
 fi
-AC_SUBST(OSSP_UUID_LIBS)
+AC_SUBST(UUID_LIBS)
 
 
 ##
@@ -1061,6 +1101,7 @@ if test "$with_ldap" = yes ; then
   if test "$PORTNAME" != "win32"; then
      AC_CHECK_HEADERS(ldap.h, [],
                       [AC_MSG_ERROR([header file <ldap.h> is required for LDAP])])
+     PGAC_LDAP_SAFE
   else
      AC_CHECK_HEADERS(winldap.h, [],
                       [AC_MSG_ERROR([header file <winldap.h> is required for LDAP])],
@@ -1075,10 +1116,27 @@ if test "$with_bonjour" = yes ; then
 fi
 
 # for contrib/uuid-ossp
-if test "$with_ossp_uuid" = yes ; then
-  AC_CHECK_HEADERS(ossp/uuid.h, [], [
-    AC_CHECK_HEADERS(uuid.h, [],
-      [AC_MSG_ERROR([header file <ossp/uuid.h> or <uuid.h> is required for OSSP-UUID])])])
+if test "$with_uuid" = bsd ; then
+  AC_CHECK_HEADERS(uuid.h,
+    [AC_EGREP_HEADER([uuid_to_string], uuid.h, [],
+      [AC_MSG_ERROR([header file <uuid.h> does not match BSD UUID library])])],
+    [AC_MSG_ERROR([header file <uuid.h> is required for BSD UUID])])
+elif test "$with_uuid" = e2fs ; then
+  AC_CHECK_HEADERS(uuid/uuid.h,
+    [AC_EGREP_HEADER([uuid_generate], uuid/uuid.h, [],
+      [AC_MSG_ERROR([header file <uuid/uuid.h> does not match E2FS UUID library])])],
+    [AC_CHECK_HEADERS(uuid.h,
+      [AC_EGREP_HEADER([uuid_generate], uuid.h, [],
+        [AC_MSG_ERROR([header file <uuid.h> does not match E2FS UUID library])])],
+      [AC_MSG_ERROR([header file <uuid/uuid.h> or <uuid.h> is required for E2FS UUID])])])
+elif test "$with_uuid" = ossp ; then
+  AC_CHECK_HEADERS(ossp/uuid.h,
+    [AC_EGREP_HEADER([uuid_export], ossp/uuid.h, [],
+      [AC_MSG_ERROR([header file <ossp/uuid.h> does not match OSSP UUID library])])],
+    [AC_CHECK_HEADERS(uuid.h,
+      [AC_EGREP_HEADER([uuid_export], uuid.h, [],
+        [AC_MSG_ERROR([header file <uuid.h> does not match OSSP UUID library])])],
+      [AC_MSG_ERROR([header file <ossp/uuid.h> or <uuid.h> is required for OSSP UUID])])])
 fi
 
 if test "$PORTNAME" = "win32" ; then
@@ -1300,7 +1358,7 @@ else
   AC_CHECK_FUNCS([fpclass fp_class fp_class_d class], [break])
 fi
 
-AC_REPLACE_FUNCS([crypt fls getopt getrusage inet_aton random rint srandom strerror strlcat strlcpy])
+AC_REPLACE_FUNCS([crypt fls getopt getrusage inet_aton mkdtemp random rint srandom strerror strlcat strlcpy])
 
 case $host_os in
 
@@ -1445,15 +1503,6 @@ ACX_PTHREAD	# set thread flags
 # are not supported.  For example, on Solaris -D_POSIX_PTHREAD_SEMANTICS
 # enables 5-arg getpwuid_r, among other things.
 PTHREAD_CFLAGS="$PTHREAD_CFLAGS -D_REENTRANT -D_THREAD_SAFE -D_POSIX_PTHREAD_SEMANTICS"
-
-
-# At this point, we don't want to muck with the compiler name for threading.
-# Let's see who fails, perhaps AIX.  2004-04-23
-if test "$PTHREAD_CC" != "$CC"; then
-AC_MSG_ERROR([
-PostgreSQL does not support platforms that require a special compiler
-for thread safety;  use --disable-thread-safety to disable thread safety.])
-fi
 
 # Check for *_r functions
 _CFLAGS="$CFLAGS"

@@ -310,6 +310,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->planner_cxt = CurrentMemoryContext;
 	root->init_plans = NIL;
 	root->cte_plan_ids = NIL;
+	root->multiexpr_params = NIL;
 	root->eq_classes = NIL;
 	root->append_rel_list = NIL;
 	root->rowMarks = NIL;
@@ -2334,7 +2335,7 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
 			{
 				*offset_est = DatumGetInt64(((Const *) est)->constvalue);
 				if (*offset_est < 0)
-					*offset_est = 0;	/* less than 0 is same as 0 */
+					*offset_est = 0;	/* treat as not present */
 			}
 		}
 		else
@@ -2495,9 +2496,8 @@ limit_needed(Query *parse)
 			{
 				int64		offset = DatumGetInt64(((Const *) node)->constvalue);
 
-				/* Executor would treat less-than-zero same as zero */
-				if (offset > 0)
-					return true;	/* OFFSET with a positive value */
+				if (offset != 0)
+					return true;	/* OFFSET with a nonzero value */
 			}
 		}
 		else
