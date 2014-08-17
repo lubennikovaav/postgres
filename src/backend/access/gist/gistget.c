@@ -509,6 +509,7 @@ gistgettuple(PG_FUNCTION_ARGS)
 	IndexScanDesc scan = (IndexScanDesc) PG_GETARG_POINTER(0);
 	ScanDirection dir = (ScanDirection) PG_GETARG_INT32(1);
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
+	ListCell *tmpPageData;
 
 	if (dir != ForwardScanDirection)
 		elog(ERROR, "GiST only supports forward scan direction");
@@ -553,7 +554,7 @@ gistgettuple(PG_FUNCTION_ARGS)
 				if(scan->xs_want_itup)
 					scan->xs_itup = tmp->ftup;
 
-				ListCell *tmpPageData = so->curPageData;
+				tmpPageData = so->curPageData;
 				/* Go to the next ListCell */
 				so->curPageData = lnext(so->curPageData);
 				/*

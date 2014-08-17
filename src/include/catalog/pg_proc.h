@@ -558,7 +558,7 @@ DATA(insert OID = 332 (  btbulkdelete	   PGNSP PGUID 12 1 0 0 0 f f f f t f v 4 
 DESCR("btree(internal)");
 DATA(insert OID = 972 (  btvacuumcleanup   PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 2281 "2281 2281" _null_ _null_ _null_ _null_ btvacuumcleanup _null_ _null_ _null_ ));
 DESCR("btree(internal)");
-DATA(insert OID = 276 (  btcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281 2281" _null_ _null_ _null_ _null_ btcanreturn _null_ _null_ _null_ ));
+DATA(insert OID = 276 (  btcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ btcanreturn _null_ _null_ _null_ ));
 DESCR("btree(internal)");
 DATA(insert OID = 1268 (  btcostestimate   PGNSP PGUID 12 1 0 0 0 f f f f t f v 7 0 2278 "2281 2281 2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ btcostestimate _null_ _null_ _null_ ));
 DESCR("btree(internal)");
@@ -941,7 +941,7 @@ DATA(insert OID = 776 (  gistbulkdelete    PGNSP PGUID 12 1 0 0 0 f f f f t f v 
 DESCR("gist(internal)");
 DATA(insert OID = 2561 (  gistvacuumcleanup   PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 2281 "2281 2281" _null_ _null_ _null_ _null_ gistvacuumcleanup _null_ _null_ _null_ ));
 DESCR("gist(internal)");
-DATA(insert OID = 3251 (  gistcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281 2281" _null_ _null_ _null_ _null_ gistcanreturn _null_ _null_ _null_ ));
+DATA(insert OID = 3251 (  gistcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ gistcanreturn _null_ _null_ _null_ ));
 DESCR("gist(internal)");
 DATA(insert OID = 772 (  gistcostestimate  PGNSP PGUID 12 1 0 0 0 f f f f t f v 7 0 2278 "2281 2281 2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ gistcostestimate _null_ _null_ _null_ ));
 DESCR("gist(internal)");
@@ -4018,7 +4018,8 @@ DATA(insert OID = 2592 (  gist_circle_compress	PGNSP PGUID 12 1 0 0 0 f f f f t 
 DESCR("GiST support");
 DATA(insert OID = 1030 (  gist_point_compress	PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 2281 "2281" _null_ _null_ _null_ _null_ gist_point_compress _null_ _null_ _null_ ));
 DESCR("GiST support");
-DATA(insert OID = 3253 (  gist_point_fetch	PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 2281 "2281" _null_ _null_ _null_ _null_ gist_point_fetch _null_ _null_ _null_ ));
+DATA(insert OID = 3253 (  gist_point_fetch	PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 2281 "2281" _null_ _null_ _null_ _null_ gist_point_fetch _null_
+_null_ _null_ ));
 DESCR("GiST support");
 DATA(insert OID = 2179 (  gist_point_consistent PGNSP PGUID 12 1 0 0 0 f f f f t f i 5 0 16 "2281 600 23 26 2281" _null_ _null_ _null_ _null_	gist_point_consistent _null_ _null_ _null_ ));
 DESCR("GiST support");
@@ -4911,7 +4912,7 @@ DATA(insert OID = 4011 (  spgbulkdelete    PGNSP PGUID 12 1 0 0 0 f f f f t f v 
 DESCR("spgist(internal)");
 DATA(insert OID = 4012 (  spgvacuumcleanup	 PGNSP PGUID 12 1 0 0 0 f f f f t f v 2 0 2281 "2281 2281" _null_ _null_ _null_ _null_ spgvacuumcleanup _null_ _null_ _null_ ));
 DESCR("spgist(internal)");
-DATA(insert OID = 4032 (  spgcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 1 0 16 "2281 2281" _null_ _null_ _null_ _null_ spgcanreturn _null_ _null_ _null_ ));
+DATA(insert OID = 4032 (  spgcanreturn	   PGNSP PGUID 12 1 0 0 0 f f f f t f s 2 0 16 "2281 2281" _null_ _null_ _null_ _null_ spgcanreturn _null_ _null_ _null_ ));
 DESCR("spgist(internal)");
 DATA(insert OID = 4013 (  spgcostestimate  PGNSP PGUID 12 1 0 0 0 f f f f t f v 7 0 2278 "2281 2281 2281 2281 2281 2281 2281" _null_ _null_ _null_ _null_ spgcostestimate _null_ _null_ _null_ ));
 DESCR("spgist(internal)");
