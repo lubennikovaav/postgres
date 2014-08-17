@@ -3,7 +3,7 @@
 --
 CREATE TABLE gist_tbl (b box, p point);
 insert into gist_tbl select box(point(0.05*i, 0.05*i), point(0.05*i, 0.05*i)),
-			 point(0.05*i, 0.05*i) FROM generate_series(0,10000) as i;
+			 point(0.05*i, 0.05*i) FROM generate_series(0,100000) as i;
 vacuum analyze;
 SET enable_seqscan TO false;
 SET enable_bitmapscan TO false;
@@ -12,46 +12,37 @@ SET enable_indexonlyscan TO true;
 -- Check singlecolumn index-only scan for point opclass
 CREATE INDEX gist_tbl_point_index ON gist_tbl USING gist (p);
 EXPLAIN (COSTS OFF)
-select p from gist_tbl where p <@ box(point(0,0),  point(100,100)) limit 10;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Limit
-   ->  Index Only Scan using gist_tbl_point_index on gist_tbl
-         Index Cond: (p <@ '(100,100),(0,0)'::box)
+select p from gist_tbl where p <@ box(point(0,0),  point(100,100)) and length(p::text) < 10;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Only Scan using gist_tbl_point_index on gist_tbl
+   Index Cond: (p <@ '(100,100),(0,0)'::box)
+   Filter: (length((p)::text) < 10)
 (3 rows)
 
 DROP INDEX gist_tbl_point_index;
 -- Check singlecolumn index-only scan for box opclass
 CREATE INDEX gist_tbl_box_index ON gist_tbl USING gist (b);
+vacuum analyze;
 EXPLAIN (COSTS OFF)
-select b from gist_tbl where b <@ box(point(5,5),  point(6,6)) limit 10;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Limit
-   ->  Index Only Scan using gist_tbl_box_index on gist_tbl
-         Index Cond: (b <@ '(6,6),(5,5)'::box)
-(3 rows)
+select b from gist_tbl where b <@ box(point(5,5),  point(6,6));
+                      QUERY PLAN                      
+------------------------------------------------------
+ Index Only Scan using gist_tbl_box_index on gist_tbl
+   Index Cond: (b <@ '(6,6),(5,5)'::box)
+(2 rows)
 
 DROP INDEX gist_tbl_box_index;
 -- Check multicolumn indexonlyscan for gist
 CREATE INDEX gist_tbl_multi_index ON gist_tbl USING gist (b, p);
+vacuum analyze;
 EXPLAIN (COSTS OFF)
-select * from gist_tbl where ( (b <@ box(point(5,5),  point(6,6))) and (p <@ box(point(0,0),  point(100,100)))) limit 10;
-                                    QUERY PLAN                                     
------------------------------------------------------------------------------------
- Limit
-   ->  Index Only Scan using gist_tbl_multi_index on gist_tbl
-         Index Cond: ((b <@ '(6,6),(5,5)'::box) AND (p <@ '(100,100),(0,0)'::box))
-(3 rows)
-
-EXPLAIN (COSTS OFF)
-select * from gist_tbl where ( (b <@ box(point(5,5),  point(6,6))) or (p <@ box(point(0,0),  point(100,100)))) limit 10;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Limit
-   ->  Seq Scan on gist_tbl
-         Filter: ((b <@ '(6,6),(5,5)'::box) OR (p <@ '(100,100),(0,0)'::box))
-(3 rows)
+select b, p from gist_tbl where ( (b <@ box(point(5,5),  point(6,6))) and (p <@ box(point(5,5),  point(5.5,5.5))));
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Index Only Scan using gist_tbl_multi_index on gist_tbl
+   Index Cond: ((b <@ '(6,6),(5,5)'::box) AND (p <@ '(5.5,5.5),(5,5)'::box))
+(2 rows)
 
 DROP INDEX gist_tbl_multi_index;
 RESET enable_seqscan;
