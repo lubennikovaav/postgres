@@ -130,6 +130,10 @@ extern Datum transformGenericOptions(Oid catalogId,
 						List *options,
 						Oid fdwvalidator);
 
+/* commands/amcmds.c */
+extern Oid	DefineAccessMethod(List *names, List *parameters);
+extern void	RemoveAccessMethodById(Oid amOid);
+
 /* support routines in commands/define.c */
 
 extern char *defGetString(DefElem *def);

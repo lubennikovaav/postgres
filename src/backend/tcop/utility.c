@@ -1104,6 +1104,10 @@ ProcessUtilitySlow(Node *parsetree,
 							Assert(stmt->args == NIL);
 							DefineCollation(stmt->defnames, stmt->definition);
 							break;
+						case OBJECT_ACCESS_METHOD:
+							Assert(stmt->args == NIL);
+							DefineAccessMethod(stmt->defnames, stmt->definition);
+							break;
 						default:
 							elog(ERROR, "unrecognized define stmt type: %d",
 								 (int) stmt->kind);
@@ -1959,6 +1963,9 @@ CreateCommandTag(Node *parsetree)
 				case OBJECT_POLICY:
 					tag = "DROP POLICY";
 					break;
+				case OBJECT_ACCESS_METHOD:
+					tag = "DROP ACCESS METHOD";
+					break;
 				default:
 					tag = "???";
 			}
@@ -2054,6 +2061,9 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_COLLATION:
 					tag = "CREATE COLLATION";
+					break;
+				case OBJECT_ACCESS_METHOD:
+					tag = "CREATE ACCESS METHOD";
 					break;
 				default:
 					tag = "???";

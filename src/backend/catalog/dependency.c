@@ -1255,6 +1255,10 @@ doDeletion(const ObjectAddress *object, int flags)
 			RemovePolicyById(object->objectId);
 			break;
 
+		case OCLASS_AM:
+			RemoveAccessMethodById(object->objectId);
+			break;
+
 		default:
 			elog(ERROR, "unrecognized object class: %u",
 				 object->classId);
@@ -2325,6 +2329,9 @@ getObjectClass(const ObjectAddress *object)
 
 		case RowSecurityRelationId:
 			return OCLASS_ROWSECURITY;
+
+		case AccessMethodRelationId:
+			return OCLASS_AM;
 	}
 
 	/* shouldn't get here */

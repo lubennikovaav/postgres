@@ -148,6 +148,7 @@ typedef enum ObjectClass
 	OCLASS_EXTENSION,			/* pg_extension */
 	OCLASS_EVENT_TRIGGER,		/* pg_event_trigger */
 	OCLASS_ROWSECURITY,			/* pg_rowsecurity */
+	OCLASS_AM,					/* pg_am */
 	MAX_OCLASS					/* MUST BE LAST */
 } ObjectClass;
 

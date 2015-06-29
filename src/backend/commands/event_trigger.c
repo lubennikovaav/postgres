@@ -67,6 +67,7 @@ typedef enum
 } event_trigger_command_tag_check_result;
 
 static event_trigger_support_data event_trigger_support[] = {
+	{"ACCESS METHOD", true},
 	{"AGGREGATE", true},
 	{"CAST", true},
 	{"CONSTRAINT", true},
@@ -917,6 +918,7 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_EVENT_TRIGGER:
 			/* no support for event triggers on event triggers */
 			return false;
+		case OBJECT_ACCESS_METHOD:
 		case OBJECT_AGGREGATE:
 		case OBJECT_ATTRIBUTE:
 		case OBJECT_CAST:
