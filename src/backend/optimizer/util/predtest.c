@@ -4,7 +4,7 @@
  *	  Routines to attempt to prove logical implications between predicate
  *	  expressions.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1248,7 +1248,7 @@ list_member_strip(List *list, Expr *datum)
  * Define "operator implication tables" for btree operators ("strategies"),
  * and similar tables for refutation.
  *
- * The strategy numbers defined by btree indexes (see access/skey.h) are:
+ * The strategy numbers defined by btree indexes (see access/stratnum.h) are:
  *		1 <		2 <=	3 =		4 >=	5 >
  * and in addition we use 6 to represent <>.  <> is not a btree-indexable
  * operator, but we assume here that if an equality operator of a btree
@@ -1711,9 +1711,8 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(OprProofCacheKey);
 		ctl.entrysize = sizeof(OprProofCacheEntry);
-		ctl.hash = tag_hash;
 		OprProofCacheHash = hash_create("Btree proof lookup cache", 256,
-										&ctl, HASH_ELEM | HASH_FUNCTION);
+										&ctl, HASH_ELEM | HASH_BLOBS);
 
 		/* Arrange to flush cache on pg_amop changes */
 		CacheRegisterSyscacheCallback(AMOPOPID,

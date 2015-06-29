@@ -3,7 +3,7 @@
  * port.h
  *	  Header for src/port/ compatibility functions.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/port.h
@@ -61,7 +61,7 @@ extern void get_man_path(const char *my_exec_path, char *ret_path);
 extern bool get_home_path(char *ret_path);
 extern void get_parent_directory(char *path);
 
-/* port/dirmod.c */
+/* common/pgfnames.c */
 extern char **pgfnames(const char *path);
 extern void pgfnames_cleanup(char **filenames);
 
@@ -153,28 +153,16 @@ extern unsigned char pg_ascii_tolower(unsigned char ch);
 #endif
 
 extern int	pg_vsnprintf(char *str, size_t count, const char *fmt, va_list args);
-extern int
-pg_snprintf(char *str, size_t count, const char *fmt,...)
-/* This extension allows gcc to check the format string */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 3, 4)));
-extern int
-pg_sprintf(char *str, const char *fmt,...)
-/* This extension allows gcc to check the format string */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 2, 3)));
+extern int	pg_snprintf(char *str, size_t count, const char *fmt,...) pg_attribute_printf(3, 4);
+extern int	pg_sprintf(char *str, const char *fmt,...) pg_attribute_printf(2, 3);
 extern int	pg_vfprintf(FILE *stream, const char *fmt, va_list args);
-extern int
-pg_fprintf(FILE *stream, const char *fmt,...)
-/* This extension allows gcc to check the format string */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 2, 3)));
-extern int
-pg_printf(const char *fmt,...)
-/* This extension allows gcc to check the format string */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 1, 2)));
+extern int	pg_fprintf(FILE *stream, const char *fmt,...) pg_attribute_printf(2, 3);
+extern int	pg_printf(const char *fmt,...) pg_attribute_printf(1, 2);
 
 /*
- *	The GCC-specific code below prevents the __attribute__(... 'printf')
- *	above from being replaced, and this is required because gcc doesn't
- *	know anything about pg_printf.
+ *	The GCC-specific code below prevents the pg_attribute_printf above from
+ *	being replaced, and this is required because gcc doesn't know anything
+ *	about pg_printf.
  */
 #ifdef __GNUC__
 #define vsnprintf(...)	pg_vsnprintf(__VA_ARGS__)
@@ -369,6 +357,10 @@ extern off_t ftello(FILE *stream);
 #endif
 #endif
 
+#define RAND48_SEED_0	(0x330e)
+#define RAND48_SEED_1	(0xabcd)
+#define RAND48_SEED_2	(0x1234)
+
 extern double pg_erand48(unsigned short xseed[3]);
 extern long pg_lrand48(void);
 extern void pg_srand48(long seed);
@@ -388,6 +380,10 @@ extern int	getpeereid(int sock, uid_t *uid, gid_t *gid);
 
 #ifndef HAVE_ISINF
 extern int	isinf(double x);
+#endif
+
+#ifndef HAVE_MKDTEMP
+extern char *mkdtemp(char *path);
 #endif
 
 #ifndef HAVE_RINT
@@ -427,7 +423,7 @@ extern void srandom(unsigned int seed);
 /* thread.h */
 extern char *pqStrerror(int errnum, char *strerrbuf, size_t buflen);
 
-#if !defined(WIN32) || defined(__CYGWIN__)
+#ifndef WIN32
 extern int pqGetpwuid(uid_t uid, struct passwd * resultbuf, char *buffer,
 		   size_t buflen, struct passwd ** result);
 #endif
@@ -465,9 +461,6 @@ extern int	pg_check_dir(const char *dir);
 
 /* port/pgmkdirp.c */
 extern int	pg_mkdir_p(char *path, int omode);
-
-/* port/mkdtemp.c */
-extern char *mkdtemp(char *path);
 
 /* port/pqsignal.c */
 typedef void (*pqsigfunc) (int signo);

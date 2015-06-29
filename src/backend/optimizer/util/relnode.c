@@ -3,7 +3,7 @@
  * relnode.c
  *	  Relation-node lookup/construction routines
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -101,6 +101,7 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptKind reloptkind)
 	rel->width = 0;
 	/* cheap startup cost is interesting iff not all tuples to be retrieved */
 	rel->consider_startup = (root->tuple_fraction > 0);
+	rel->consider_param_startup = false;		/* might get changed later */
 	rel->reltargetlist = NIL;
 	rel->pathlist = NIL;
 	rel->ppilist = NIL;
@@ -121,6 +122,7 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptKind reloptkind)
 	rel->subplan = NULL;
 	rel->subroot = NULL;
 	rel->subplan_params = NIL;
+	rel->serverid = InvalidOid;
 	rel->fdwroutine = NULL;
 	rel->fdw_private = NULL;
 	rel->baserestrictinfo = NIL;
@@ -360,6 +362,7 @@ build_join_rel(PlannerInfo *root,
 	joinrel->width = 0;
 	/* cheap startup cost is interesting iff not all tuples to be retrieved */
 	joinrel->consider_startup = (root->tuple_fraction > 0);
+	joinrel->consider_param_startup = false;
 	joinrel->reltargetlist = NIL;
 	joinrel->pathlist = NIL;
 	joinrel->ppilist = NIL;
@@ -383,6 +386,7 @@ build_join_rel(PlannerInfo *root,
 	joinrel->subplan = NULL;
 	joinrel->subroot = NULL;
 	joinrel->subplan_params = NIL;
+	joinrel->serverid = InvalidOid;
 	joinrel->fdwroutine = NULL;
 	joinrel->fdw_private = NULL;
 	joinrel->baserestrictinfo = NIL;
@@ -390,6 +394,17 @@ build_join_rel(PlannerInfo *root,
 	joinrel->baserestrictcost.per_tuple = 0;
 	joinrel->joininfo = NIL;
 	joinrel->has_eclass_joins = false;
+
+	/*
+	 * Set up foreign-join fields if outer and inner relation are foreign
+	 * tables (or joins) belonging to the same server.
+	 */
+	if (OidIsValid(outer_rel->serverid) &&
+		inner_rel->serverid == outer_rel->serverid)
+	{
+		joinrel->serverid = outer_rel->serverid;
+		joinrel->fdwroutine = outer_rel->fdwroutine;
+	}
 
 	/*
 	 * Create a new tlist containing just the vars that need to be output from
@@ -713,7 +728,8 @@ build_empty_join_rel(PlannerInfo *root)
  *		Get the AppendRelInfo associated with an appendrel child rel.
  *
  * This search could be eliminated by storing a link in child RelOptInfos,
- * but for now it doesn't seem performance-critical.
+ * but for now it doesn't seem performance-critical.  (Also, it might be
+ * difficult to maintain such a link during mutation of the append_rel_list.)
  */
 AppendRelInfo *
 find_childrel_appendrelinfo(PlannerInfo *root, RelOptInfo *rel)
@@ -734,6 +750,62 @@ find_childrel_appendrelinfo(PlannerInfo *root, RelOptInfo *rel)
 	/* should have found the entry ... */
 	elog(ERROR, "child rel %d not found in append_rel_list", relid);
 	return NULL;				/* not reached */
+}
+
+
+/*
+ * find_childrel_top_parent
+ *		Fetch the topmost appendrel parent rel of an appendrel child rel.
+ *
+ * Since appendrels can be nested, a child could have multiple levels of
+ * appendrel ancestors.  This function locates the topmost ancestor,
+ * which will be a regular baserel not an otherrel.
+ */
+RelOptInfo *
+find_childrel_top_parent(PlannerInfo *root, RelOptInfo *rel)
+{
+	do
+	{
+		AppendRelInfo *appinfo = find_childrel_appendrelinfo(root, rel);
+		Index		prelid = appinfo->parent_relid;
+
+		/* traverse up to the parent rel, loop if it's also a child rel */
+		rel = find_base_rel(root, prelid);
+	} while (rel->reloptkind == RELOPT_OTHER_MEMBER_REL);
+
+	Assert(rel->reloptkind == RELOPT_BASEREL);
+
+	return rel;
+}
+
+
+/*
+ * find_childrel_parents
+ *		Compute the set of parent relids of an appendrel child rel.
+ *
+ * Since appendrels can be nested, a child could have multiple levels of
+ * appendrel ancestors.  This function computes a Relids set of all the
+ * parent relation IDs.
+ */
+Relids
+find_childrel_parents(PlannerInfo *root, RelOptInfo *rel)
+{
+	Relids		result = NULL;
+
+	do
+	{
+		AppendRelInfo *appinfo = find_childrel_appendrelinfo(root, rel);
+		Index		prelid = appinfo->parent_relid;
+
+		result = bms_add_member(result, prelid);
+
+		/* traverse up to the parent rel, loop if it's also a child rel */
+		rel = find_base_rel(root, prelid);
+	} while (rel->reloptkind == RELOPT_OTHER_MEMBER_REL);
+
+	Assert(rel->reloptkind == RELOPT_BASEREL);
+
+	return result;
 }
 
 

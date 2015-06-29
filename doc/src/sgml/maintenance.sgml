@@ -628,6 +628,9 @@ HINT:  Stop the postmaster and vacuum that database in single-user mode.
      Like transaction IDs, multixact IDs are implemented as a
      32-bit counter and corresponding storage, all of which requires
      careful aging management, storage cleanup, and wraparound handling.
+     There is a separate storage area which holds the list of members in
+     each multixact, which also uses a 32-bit counter and which must also
+     be managed.
     </para>
 
     <para>
@@ -640,7 +643,12 @@ HINT:  Stop the postmaster and vacuum that database in single-user mode.
      possible multixact ID still appearing in any tuple of that table.
      If this value is older than
      <xref linkend="guc-vacuum-multixact-freeze-table-age">, a whole-table
-     scan is forced.  Whole-table <command>VACUUM</> scans, regardless of
+     scan is forced.  <function>mxid_age()</> can be used on
+     <structname>pg_class</>.<structfield>relminmxid</> to find its age.
+    </para>
+
+    <para>
+     Whole-table <command>VACUUM</> scans, regardless of
      what causes them, enable advancing the value for that table.
      Eventually, as all tables in all databases are scanned and their
      oldest multixact values are advanced, on-disk storage for older
@@ -650,8 +658,12 @@ HINT:  Stop the postmaster and vacuum that database in single-user mode.
     <para>
      As a safety device, a whole-table vacuum scan will occur for any table
      whose multixact-age is greater than
-     <xref linkend="guc-autovacuum-multixact-freeze-max-age">.
-     This will occur even if autovacuum is nominally disabled.
+     <xref linkend="guc-autovacuum-multixact-freeze-max-age">.  Whole-table
+     vacuum scans will also occur progressively for all tables, starting with
+     those that have the oldest multixact-age, if the amount of used member
+     storage space exceeds the amount 50% of the addressible storage space.
+     Both of these kinds of whole-table scans will occur even if autovacuum is
+     nominally disabled.
     </para>
    </sect3>
   </sect2>
@@ -787,10 +799,13 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    </para>
 
    <para>
-    When multiple workers are running, the cost limit is
+    When multiple workers are running, the cost delay parameters are
     <quote>balanced</quote> among all the running workers, so that the
-    total impact on the system is the same, regardless of the number
-    of workers actually running.
+    total I/O impact on the system is the same regardless of the number
+    of workers actually running.  However, any workers processing tables whose
+    <literal>autovacuum_vacuum_cost_delay</> or
+    <literal>autovacuum_vacuum_cost_limit</> have been set are not considered
+    in the balancing algorithm.
    </para>
   </sect2>
  </sect1>

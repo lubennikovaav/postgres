@@ -13,7 +13,7 @@
  *	plan --- consider improving this someday.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/ri_triggers.c
  *
@@ -43,6 +43,7 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
 #include "miscadmin.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -50,6 +51,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
@@ -2303,6 +2305,18 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	if (!ExecCheckRTPerms(list_make2(fkrte, pkrte), false))
 		return false;
 
+	/*
+	 * Also punt if RLS is enabled on either table unless this role has the
+	 * bypassrls right or is the table owner of the table(s) involved which
+	 * have RLS enabled.
+	 */
+	if (!has_bypassrls_privilege(GetUserId()) &&
+		((pk_rel->rd_rel->relrowsecurity &&
+		  !pg_class_ownercheck(pkrte->relid, GetUserId())) ||
+		 (fk_rel->rd_rel->relrowsecurity &&
+		  !pg_class_ownercheck(fkrte->relid, GetUserId()))))
+		return false;
+
 	/*----------
 	 * The query string built is:
 	 *	SELECT fk.keycols FROM ONLY relname fk
@@ -2410,7 +2424,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	snprintf(workmembuf, sizeof(workmembuf), "%d", maintenance_work_mem);
 	(void) set_config_option("work_mem", workmembuf,
 							 PGC_USERSET, PGC_S_SESSION,
-							 GUC_ACTION_SAVE, true, 0);
+							 GUC_ACTION_SAVE, true, 0, false);
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
@@ -2956,6 +2970,7 @@ ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 	Relation	query_rel;
 	Oid			save_userid;
 	int			save_sec_context;
+	int			temp_sec_context;
 
 	/*
 	 * Use the query type code to determine whether the query is run against
@@ -2968,8 +2983,22 @@ ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 
 	/* Switch to proper UID to perform check as */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+
+	/*
+	 * Row-level security should be disabled in the case where a foreign-key
+	 * relation is queried to check existence of tuples that references the
+	 * primary-key being modified.
+	 */
+	temp_sec_context = save_sec_context | SECURITY_LOCAL_USERID_CHANGE;
+	if (qkey->constr_queryno == RI_PLAN_CHECK_LOOKUPPK
+		|| qkey->constr_queryno == RI_PLAN_CHECK_LOOKUPPK_FROM_PK
+		|| qkey->constr_queryno == RI_PLAN_RESTRICT_DEL_CHECKREF
+		|| qkey->constr_queryno == RI_PLAN_RESTRICT_UPD_CHECKREF)
+		temp_sec_context |= SECURITY_ROW_LEVEL_DISABLED;
+
+
 	SetUserIdAndSecContext(RelationGetForm(query_rel)->relowner,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+						   temp_sec_context);
 
 	/* Create the plan */
 	qplan = SPI_prepare(querystr, nargs, argtypes);
@@ -3170,6 +3199,9 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 	bool		onfk;
 	const int16 *attnums;
 	int			idx;
+	Oid			rel_oid;
+	AclResult	aclresult;
+	bool		has_perm = true;
 
 	if (spi_err)
 		ereport(ERROR,
@@ -3188,37 +3220,75 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 	if (onfk)
 	{
 		attnums = riinfo->fk_attnums;
+		rel_oid = fk_rel->rd_id;
 		if (tupdesc == NULL)
 			tupdesc = fk_rel->rd_att;
 	}
 	else
 	{
 		attnums = riinfo->pk_attnums;
+		rel_oid = pk_rel->rd_id;
 		if (tupdesc == NULL)
 			tupdesc = pk_rel->rd_att;
 	}
 
-	/* Get printable versions of the keys involved */
-	initStringInfo(&key_names);
-	initStringInfo(&key_values);
-	for (idx = 0; idx < riinfo->nkeys; idx++)
+	/*
+	 * Check permissions- if the user does not have access to view the data in
+	 * any of the key columns then we don't include the errdetail() below.
+	 *
+	 * Check if RLS is enabled on the relation first.  If so, we don't return
+	 * any specifics to avoid leaking data.
+	 *
+	 * Check table-level permissions next and, failing that, column-level
+	 * privileges.
+	 */
+
+	if (check_enable_rls(rel_oid, GetUserId(), true) != RLS_ENABLED)
 	{
-		int			fnum = attnums[idx];
-		char	   *name,
-				   *val;
-
-		name = SPI_fname(tupdesc, fnum);
-		val = SPI_getvalue(violator, tupdesc, fnum);
-		if (!val)
-			val = "null";
-
-		if (idx > 0)
+		aclresult = pg_class_aclcheck(rel_oid, GetUserId(), ACL_SELECT);
+		if (aclresult != ACLCHECK_OK)
 		{
-			appendStringInfoString(&key_names, ", ");
-			appendStringInfoString(&key_values, ", ");
+			/* Try for column-level permissions */
+			for (idx = 0; idx < riinfo->nkeys; idx++)
+			{
+				aclresult = pg_attribute_aclcheck(rel_oid, attnums[idx],
+												  GetUserId(),
+												  ACL_SELECT);
+
+				/* No access to the key */
+				if (aclresult != ACLCHECK_OK)
+				{
+					has_perm = false;
+					break;
+				}
+			}
 		}
-		appendStringInfoString(&key_names, name);
-		appendStringInfoString(&key_values, val);
+	}
+
+	if (has_perm)
+	{
+		/* Get printable versions of the keys involved */
+		initStringInfo(&key_names);
+		initStringInfo(&key_values);
+		for (idx = 0; idx < riinfo->nkeys; idx++)
+		{
+			int			fnum = attnums[idx];
+			char	   *name,
+					   *val;
+
+			name = SPI_fname(tupdesc, fnum);
+			val = SPI_getvalue(violator, tupdesc, fnum);
+			if (!val)
+				val = "null";
+
+			if (idx > 0)
+			{
+				appendStringInfoString(&key_names, ", ");
+				appendStringInfoString(&key_values, ", ");
+			}
+			appendStringInfoString(&key_names, name);
+			appendStringInfoString(&key_values, val);
+		}
 	}
 
 	if (onfk)
@@ -3227,8 +3297,11 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 				 errmsg("insert or update on table \"%s\" violates foreign key constraint \"%s\"",
 						RelationGetRelationName(fk_rel),
 						NameStr(riinfo->conname)),
+				 has_perm ?
 				 errdetail("Key (%s)=(%s) is not present in table \"%s\".",
 						   key_names.data, key_values.data,
+						   RelationGetRelationName(pk_rel)) :
+				 errdetail("Key is not present in table \"%s\".",
 						   RelationGetRelationName(pk_rel)),
 				 errtableconstraint(fk_rel, NameStr(riinfo->conname))));
 	else
@@ -3238,9 +3311,12 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 						RelationGetRelationName(pk_rel),
 						NameStr(riinfo->conname),
 						RelationGetRelationName(fk_rel)),
+				 has_perm ?
 			errdetail("Key (%s)=(%s) is still referenced from table \"%s\".",
 					  key_names.data, key_values.data,
-					  RelationGetRelationName(fk_rel)),
+					  RelationGetRelationName(fk_rel)) :
+				 errdetail("Key is still referenced from table \"%s\".",
+						   RelationGetRelationName(fk_rel)),
 				 errtableconstraint(fk_rel, NameStr(riinfo->conname))));
 }
 
@@ -3299,10 +3375,9 @@ ri_InitHashTables(void)
 	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RI_ConstraintInfo);
-	ctl.hash = oid_hash;
 	ri_constraint_cache = hash_create("RI constraint cache",
 									  RI_INIT_CONSTRAINTHASHSIZE,
-									  &ctl, HASH_ELEM | HASH_FUNCTION);
+									  &ctl, HASH_ELEM | HASH_BLOBS);
 
 	/* Arrange to flush cache on pg_constraint changes */
 	CacheRegisterSyscacheCallback(CONSTROID,
@@ -3312,18 +3387,16 @@ ri_InitHashTables(void)
 	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(RI_QueryKey);
 	ctl.entrysize = sizeof(RI_QueryHashEntry);
-	ctl.hash = tag_hash;
 	ri_query_cache = hash_create("RI query cache",
 								 RI_INIT_QUERYHASHSIZE,
-								 &ctl, HASH_ELEM | HASH_FUNCTION);
+								 &ctl, HASH_ELEM | HASH_BLOBS);
 
 	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(RI_CompareKey);
 	ctl.entrysize = sizeof(RI_CompareHashEntry);
-	ctl.hash = tag_hash;
 	ri_compare_cache = hash_create("RI compare cache",
 								   RI_INIT_QUERYHASHSIZE,
-								   &ctl, HASH_ELEM | HASH_FUNCTION);
+								   &ctl, HASH_ELEM | HASH_BLOBS);
 }
 
 

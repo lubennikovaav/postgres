@@ -3,7 +3,7 @@
  * catcache.c
  *	  System catalog cache for tuples matching a key.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -150,6 +150,8 @@ GetCCHashEqFuncs(Oid keytype, PGFunction *hashfunc, RegProcedure *eqfunc)
 		case REGTYPEOID:
 		case REGCONFIGOID:
 		case REGDICTIONARYOID:
+		case REGROLEOID:
+		case REGNAMESPACEOID:
 			*hashfunc = hashoid;
 
 			*eqfunc = F_OIDEQ;
@@ -1121,7 +1123,7 @@ SearchCatCache(CatCache *cache,
 	SysScanDesc scandesc;
 	HeapTuple	ntp;
 
-	/* Make sure we're in a xact, even if this ends up being a cache hit */
+	/* Make sure we're in an xact, even if this ends up being a cache hit */
 	Assert(IsTransactionState());
 
 	/*
@@ -1590,7 +1592,7 @@ SearchCatCacheList(CatCache *cache,
 		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 		nmembers = list_length(ctlist);
 		cl = (CatCList *)
-			palloc(sizeof(CatCList) + nmembers * sizeof(CatCTup *));
+			palloc(offsetof(CatCList, members) +nmembers * sizeof(CatCTup *));
 		heap_copytuple_with_tuple(ntp, &cl->tuple);
 		MemoryContextSwitchTo(oldcxt);
 		heap_freetuple(ntp);

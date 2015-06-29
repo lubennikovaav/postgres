@@ -169,31 +169,21 @@ su - postgres
       also on most platforms.  This appears to be the default in
       recent <productname>Perl</productname> versions, but it was not
       in earlier versions, and in any case it is the choice of whomever
-      installed Perl at your site.
+      installed Perl at your site.  <filename>configure</filename> will fail
+      if building <application>PL/Perl</application> is selected but it cannot
+      find a shared <filename>libperl</filename>.  In that case, you will have
+      to rebuild and install <productname>Perl</productname> manually to be
+      able to build <application>PL/Perl</application>.  During the
+      configuration process for <productname>Perl</productname>, request a
+      shared library.
+     </para>
+
+     <para>
       If you intend to make more than incidental use of
       <application>PL/Perl</application>, you should ensure that the
       <productname>Perl</productname> installation was built with the
       <literal>usemultiplicity</> option enabled (<literal>perl -V</>
       will show whether this is the case).
-     </para>
-
-     <para>
-      If you don't have the shared library but you need one, a message
-      like this will appear during the <productname>PostgreSQL</>
-      build to point out this fact:
-<screen>
-*** Cannot build PL/Perl because libperl is not a shared library.
-*** You might have to rebuild your Perl installation.  Refer to
-*** the documentation for details.
-</screen>
-      (If you don't follow the on-screen output you will merely notice
-      that the <application>PL/Perl</application> library object,
-      <filename>plperl.so</filename> or similar, will not be
-      installed.)  If you see this, you will have to rebuild and
-      install <productname>Perl</productname> manually to be able to
-      build <application>PL/Perl</application>.  During the
-      configuration process for <productname>Perl</productname>,
-      request a shared library.
      </para>
     </listitem>
 
@@ -220,28 +210,15 @@ su - postgres
       library, the <indexterm><primary>libpython</primary></indexterm>
       <filename>libpython</filename> library must be a shared library
       also on most platforms.  This is not the case in a default
-      <productname>Python</productname> installation.  If after
-      building and installing <productname>PostgreSQL</> you have a file called
-      <filename>plpython.so</filename> (possibly a different
-      extension), then everything went well.  Otherwise you should
-      have seen a notice like this flying by:
-<screen>
-*** Cannot build PL/Python because libpython is not a shared library.
-*** You might have to rebuild your Python installation.  Refer to
-*** the documentation for details.
-</screen>
-      That means you have to rebuild (part of) your
-      <productname>Python</productname> installation to create this
-      shared library.
-     </para>
-
-     <para>
-      If you have problems, run <productname>Python</> 2.3 or later's
-      configure using the <literal>--enable-shared</> flag.  On some
-      operating systems you don't have to build a shared library, but
-      you will have to convince the <productname>PostgreSQL</> build
-      system of this.  Consult the <filename>Makefile</filename> in
-      the <filename>src/pl/plpython</filename> directory for details.
+      <productname>Python</productname> installation built from source, but a
+      shared library is available in many operating system
+      distributions.  <filename>configure</filename> will fail if
+      building <application>PL/Python</application> is selected but it cannot
+      find a shared <filename>libpython</filename>.  That might mean that you
+      either have to install additional packages or rebuild (part of) your
+      <productname>Python</productname> installation to provide this shared
+      library.  When building from source, run <productname>Python</>'s
+      configure with the <literal>--enable-shared</> flag.
      </para>
     </listitem>
 
@@ -864,7 +841,7 @@ su - postgres
        <listitem>
         <para>
          Build with Bonjour support.  This requires Bonjour support
-         in your operating system.  Recommended on Mac OS X.
+         in your operating system.  Recommended on OS X.
         </para>
        </listitem>
       </varlistentry>
@@ -890,7 +867,7 @@ su - postgres
           <para>
            <option>e2fs</> to use the UUID library created by
            the <literal>e2fsprogs</> project; this library is present in most
-           Linux systems and in Mac OS X, and can be obtained for other
+           Linux systems and in OS X, and can be obtained for other
            platforms as well
           </para>
          </listitem>
@@ -1108,7 +1085,7 @@ su - postgres
         <para>
          <productname>PostgreSQL</> includes its own time zone database,
          which it requires for date and time operations.  This time zone
-         database is in fact compatible with the <quote>zoneinfo</> time zone
+         database is in fact compatible with the IANA time zone
          database provided by many operating systems such as FreeBSD,
          Linux, and Solaris, so it would be redundant to install it again.
          When this option is used, the system-supplied time zone database
@@ -1271,6 +1248,16 @@ su - postgres
        </listitem>
       </varlistentry>
 
+      <varlistentry>
+       <term><option>--enable-tap-tests</option></term>
+       <listitem>
+        <para>
+         Enable tests using the Perl TAP tools.  This requires a Perl
+         installation and the Perl module <literal>IPC::Run</literal>.
+         <![%standalone-ignore;[See <xref linkend="regress-tap"> for more information.]]>
+        </para>
+       </listitem>
+      </varlistentry>
      </variablelist>
     </para>
 
@@ -1990,7 +1977,7 @@ kill `cat /usr/local/pgsql/data/postmaster.pid`
   <para>
    <productname>PostgreSQL</> can be expected to work on these operating
    systems: Linux (all recent distributions), Windows (Win2000 SP4 and later),
-   FreeBSD, OpenBSD, NetBSD, Mac OS X, AIX, HP/UX, Solaris,
+   FreeBSD, OpenBSD, NetBSD, OS X, AIX, HP/UX, Solaris,
    and UnixWare.  Other Unix-like systems may also work but are not currently
    being tested.  In most cases, all CPU architectures supported by
    a given operating system will work.  Look in

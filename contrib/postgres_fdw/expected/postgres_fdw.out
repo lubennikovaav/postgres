@@ -3,8 +3,14 @@
 -- ===================================================================
 CREATE EXTENSION postgres_fdw;
 CREATE SERVER testserver1 FOREIGN DATA WRAPPER postgres_fdw;
-CREATE SERVER loopback FOREIGN DATA WRAPPER postgres_fdw
-  OPTIONS (dbname 'contrib_regression');
+DO $d$
+    BEGIN
+        EXECUTE $$CREATE SERVER loopback FOREIGN DATA WRAPPER postgres_fdw
+            OPTIONS (dbname '$$||current_database()||$$',
+                     port '$$||current_setting('port')||$$'
+            )$$;
+    END;
+$d$;
 CREATE USER MAPPING FOR public SERVER testserver1
 	OPTIONS (user 'value', password 'value');
 CREATE USER MAPPING FOR CURRENT_USER SERVER loopback;
@@ -229,6 +235,39 @@ SELECT * FROM ft1 t1 WHERE t1.c1 = 101 AND t1.c6 = '1' AND t1.c7 >= '1';
  c1  | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
 -----+----+-------+------------------------------+--------------------------+----+------------+-----
  101 |  1 | 00101 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
+(1 row)
+
+-- with FOR UPDATE/SHARE
+EXPLAIN (VERBOSE, COSTS false) SELECT * FROM ft1 t1 WHERE c1 = 101 FOR UPDATE;
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
+ LockRows
+   Output: c1, c2, c3, c4, c5, c6, c7, c8, t1.*
+   ->  Foreign Scan on public.ft1 t1
+         Output: c1, c2, c3, c4, c5, c6, c7, c8, t1.*
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE (("C 1" = 101)) FOR UPDATE
+(5 rows)
+
+SELECT * FROM ft1 t1 WHERE c1 = 101 FOR UPDATE;
+ c1  | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+-----+----+-------+------------------------------+--------------------------+----+------------+-----
+ 101 |  1 | 00101 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS false) SELECT * FROM ft1 t1 WHERE c1 = 102 FOR SHARE;
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ LockRows
+   Output: c1, c2, c3, c4, c5, c6, c7, c8, t1.*
+   ->  Foreign Scan on public.ft1 t1
+         Output: c1, c2, c3, c4, c5, c6, c7, c8, t1.*
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE (("C 1" = 102)) FOR SHARE
+(5 rows)
+
+SELECT * FROM ft1 t1 WHERE c1 = 102 FOR SHARE;
+ c1  | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+-----+----+-------+------------------------------+--------------------------+----+------------+-----
+ 102 |  2 | 00102 | Sat Jan 03 00:00:00 1970 PST | Sat Jan 03 00:00:00 1970 | 2  | 2          | foo
 (1 row)
 
 -- aggregate
@@ -826,6 +865,74 @@ DEALLOCATE st2;
 DEALLOCATE st3;
 DEALLOCATE st4;
 DEALLOCATE st5;
+-- System columns, except ctid, should not be sent to remote
+EXPLAIN (VERBOSE, COSTS false)
+SELECT * FROM ft1 t1 WHERE t1.tableoid = 'pg_class'::regclass LIMIT 1;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Limit
+   Output: c1, c2, c3, c4, c5, c6, c7, c8
+   ->  Foreign Scan on public.ft1 t1
+         Output: c1, c2, c3, c4, c5, c6, c7, c8
+         Filter: (t1.tableoid = '1259'::oid)
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
+(6 rows)
+
+SELECT * FROM ft1 t1 WHERE t1.tableoid = 'ft1'::regclass LIMIT 1;
+ c1 | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+----+----+-------+------------------------------+--------------------------+----+------------+-----
+  1 |  1 | 00001 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS false)
+SELECT tableoid::regclass, * FROM ft1 t1 LIMIT 1;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Limit
+   Output: ((tableoid)::regclass), c1, c2, c3, c4, c5, c6, c7, c8
+   ->  Foreign Scan on public.ft1 t1
+         Output: (tableoid)::regclass, c1, c2, c3, c4, c5, c6, c7, c8
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1"
+(5 rows)
+
+SELECT tableoid::regclass, * FROM ft1 t1 LIMIT 1;
+ tableoid | c1 | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+----------+----+----+-------+------------------------------+--------------------------+----+------------+-----
+ ft1      |  1 |  1 | 00001 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS false)
+SELECT * FROM ft1 t1 WHERE t1.ctid = '(0,2)';
+                                              QUERY PLAN                                               
+-------------------------------------------------------------------------------------------------------
+ Foreign Scan on public.ft1 t1
+   Output: c1, c2, c3, c4, c5, c6, c7, c8
+   Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8 FROM "S 1"."T 1" WHERE ((ctid = '(0,2)'::tid))
+(3 rows)
+
+SELECT * FROM ft1 t1 WHERE t1.ctid = '(0,2)';
+ c1 | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+----+----+-------+------------------------------+--------------------------+----+------------+-----
+  2 |  2 | 00002 | Sat Jan 03 00:00:00 1970 PST | Sat Jan 03 00:00:00 1970 | 2  | 2          | foo
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS false)
+SELECT ctid, * FROM ft1 t1 LIMIT 1;
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Limit
+   Output: ctid, c1, c2, c3, c4, c5, c6, c7, c8
+   ->  Foreign Scan on public.ft1 t1
+         Output: ctid, c1, c2, c3, c4, c5, c6, c7, c8
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1"
+(5 rows)
+
+SELECT ctid, * FROM ft1 t1 LIMIT 1;
+ ctid  | c1 | c2 |  c3   |              c4              |            c5            | c6 |     c7     | c8  
+-------+----+----+-------+------------------------------+--------------------------+----+------------+-----
+ (0,1) |  1 |  1 | 00001 | Fri Jan 02 00:00:00 1970 PST | Fri Jan 02 00:00:00 1970 | 1  | 1          | foo
+(1 row)
+
 -- ===================================================================
 -- used in pl/pgsql function
 -- ===================================================================
@@ -2220,6 +2327,11 @@ INSERT INTO ft1(c1, c2) VALUES(11, 12);  -- duplicate key
 ERROR:  duplicate key value violates unique constraint "t1_pkey"
 DETAIL:  Key ("C 1")=(11) already exists.
 CONTEXT:  Remote SQL command: INSERT INTO "S 1"."T 1"("C 1", c2, c3, c4, c5, c6, c7, c8) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO ft1(c1, c2) VALUES(11, 12) ON CONFLICT DO NOTHING; -- works
+INSERT INTO ft1(c1, c2) VALUES(11, 12) ON CONFLICT (c1, c2) DO NOTHING; -- unsupported
+ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification
+INSERT INTO ft1(c1, c2) VALUES(11, 12) ON CONFLICT (c1, c2) DO UPDATE SET c3 = 'ffg'; -- unsupported
+ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification
 INSERT INTO ft1(c1, c2) VALUES(1111, -2);  -- c2positive
 ERROR:  new row for relation "T 1" violates check constraint "c2positive"
 DETAIL:  Failing row contains (1111, -2, null, null, null, null, ft1       , null).
@@ -2481,6 +2593,91 @@ select c2, count(*) from "S 1"."T 1" where c2 < 500 group by 1 order by 1;
  407 |   100
 (13 rows)
 
+-- ===================================================================
+-- test check constraints
+-- ===================================================================
+-- Consistent check constraints provide consistent results
+ALTER FOREIGN TABLE ft1 ADD CONSTRAINT ft1_c2positive CHECK (c2 >= 0);
+EXPLAIN (VERBOSE, COSTS false) SELECT count(*) FROM ft1 WHERE c2 < 0;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Aggregate
+   Output: count(*)
+   ->  Foreign Scan on public.ft1
+         Remote SQL: SELECT NULL FROM "S 1"."T 1" WHERE ((c2 < 0))
+(4 rows)
+
+SELECT count(*) FROM ft1 WHERE c2 < 0;
+ count 
+-------
+     0
+(1 row)
+
+SET constraint_exclusion = 'on';
+EXPLAIN (VERBOSE, COSTS false) SELECT count(*) FROM ft1 WHERE c2 < 0;
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   Output: count(*)
+   ->  Result
+         One-Time Filter: false
+(4 rows)
+
+SELECT count(*) FROM ft1 WHERE c2 < 0;
+ count 
+-------
+     0
+(1 row)
+
+RESET constraint_exclusion;
+-- check constraint is enforced on the remote side, not locally
+INSERT INTO ft1(c1, c2) VALUES(1111, -2);  -- c2positive
+ERROR:  new row for relation "T 1" violates check constraint "c2positive"
+DETAIL:  Failing row contains (1111, -2, null, null, null, null, ft1       , null).
+CONTEXT:  Remote SQL command: INSERT INTO "S 1"."T 1"("C 1", c2, c3, c4, c5, c6, c7, c8) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+UPDATE ft1 SET c2 = -c2 WHERE c1 = 1;  -- c2positive
+ERROR:  new row for relation "T 1" violates check constraint "c2positive"
+DETAIL:  Failing row contains (1, -1, 00001_trig_update, 1970-01-02 08:00:00+00, 1970-01-02 00:00:00, 1, 1         , foo).
+CONTEXT:  Remote SQL command: UPDATE "S 1"."T 1" SET c2 = $2 WHERE ctid = $1
+ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c2positive;
+-- But inconsistent check constraints provide inconsistent results
+ALTER FOREIGN TABLE ft1 ADD CONSTRAINT ft1_c2negative CHECK (c2 < 0);
+EXPLAIN (VERBOSE, COSTS false) SELECT count(*) FROM ft1 WHERE c2 >= 0;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Aggregate
+   Output: count(*)
+   ->  Foreign Scan on public.ft1
+         Remote SQL: SELECT NULL FROM "S 1"."T 1" WHERE ((c2 >= 0))
+(4 rows)
+
+SELECT count(*) FROM ft1 WHERE c2 >= 0;
+ count 
+-------
+   821
+(1 row)
+
+SET constraint_exclusion = 'on';
+EXPLAIN (VERBOSE, COSTS false) SELECT count(*) FROM ft1 WHERE c2 >= 0;
+           QUERY PLAN           
+--------------------------------
+ Aggregate
+   Output: count(*)
+   ->  Result
+         One-Time Filter: false
+(4 rows)
+
+SELECT count(*) FROM ft1 WHERE c2 >= 0;
+ count 
+-------
+     0
+(1 row)
+
+RESET constraint_exclusion;
+-- local check constraint is not actually enforced
+INSERT INTO ft1(c1, c2) VALUES(1111, 2);
+UPDATE ft1 SET c2 = c2 + 1 WHERE c1 = 1;
+ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c2negative;
 -- ===================================================================
 -- test serial columns (ie, sequence-based defaults)
 -- ===================================================================
@@ -2834,6 +3031,386 @@ NOTICE:  NEW: (13,"test triggered !")
  (0,27)
 (1 row)
 
+-- ===================================================================
+-- test inheritance features
+-- ===================================================================
+CREATE TABLE a (aa TEXT);
+CREATE TABLE loct (aa TEXT, bb TEXT);
+CREATE FOREIGN TABLE b (bb TEXT) INHERITS (a)
+  SERVER loopback OPTIONS (table_name 'loct');
+INSERT INTO a(aa) VALUES('aaa');
+INSERT INTO a(aa) VALUES('aaaa');
+INSERT INTO a(aa) VALUES('aaaaa');
+INSERT INTO b(aa) VALUES('bbb');
+INSERT INTO b(aa) VALUES('bbbb');
+INSERT INTO b(aa) VALUES('bbbbb');
+SELECT tableoid::regclass, * FROM a;
+ tableoid |  aa   
+----------+-------
+ a        | aaa
+ a        | aaaa
+ a        | aaaaa
+ b        | bbb
+ b        | bbbb
+ b        | bbbbb
+(6 rows)
+
+SELECT tableoid::regclass, * FROM b;
+ tableoid |  aa   | bb 
+----------+-------+----
+ b        | bbb   | 
+ b        | bbbb  | 
+ b        | bbbbb | 
+(3 rows)
+
+SELECT tableoid::regclass, * FROM ONLY a;
+ tableoid |  aa   
+----------+-------
+ a        | aaa
+ a        | aaaa
+ a        | aaaaa
+(3 rows)
+
+UPDATE a SET aa = 'zzzzzz' WHERE aa LIKE 'aaaa%';
+SELECT tableoid::regclass, * FROM a;
+ tableoid |   aa   
+----------+--------
+ a        | aaa
+ a        | zzzzzz
+ a        | zzzzzz
+ b        | bbb
+ b        | bbbb
+ b        | bbbbb
+(6 rows)
+
+SELECT tableoid::regclass, * FROM b;
+ tableoid |  aa   | bb 
+----------+-------+----
+ b        | bbb   | 
+ b        | bbbb  | 
+ b        | bbbbb | 
+(3 rows)
+
+SELECT tableoid::regclass, * FROM ONLY a;
+ tableoid |   aa   
+----------+--------
+ a        | aaa
+ a        | zzzzzz
+ a        | zzzzzz
+(3 rows)
+
+UPDATE b SET aa = 'new';
+SELECT tableoid::regclass, * FROM a;
+ tableoid |   aa   
+----------+--------
+ a        | aaa
+ a        | zzzzzz
+ a        | zzzzzz
+ b        | new
+ b        | new
+ b        | new
+(6 rows)
+
+SELECT tableoid::regclass, * FROM b;
+ tableoid | aa  | bb 
+----------+-----+----
+ b        | new | 
+ b        | new | 
+ b        | new | 
+(3 rows)
+
+SELECT tableoid::regclass, * FROM ONLY a;
+ tableoid |   aa   
+----------+--------
+ a        | aaa
+ a        | zzzzzz
+ a        | zzzzzz
+(3 rows)
+
+UPDATE a SET aa = 'newtoo';
+SELECT tableoid::regclass, * FROM a;
+ tableoid |   aa   
+----------+--------
+ a        | newtoo
+ a        | newtoo
+ a        | newtoo
+ b        | newtoo
+ b        | newtoo
+ b        | newtoo
+(6 rows)
+
+SELECT tableoid::regclass, * FROM b;
+ tableoid |   aa   | bb 
+----------+--------+----
+ b        | newtoo | 
+ b        | newtoo | 
+ b        | newtoo | 
+(3 rows)
+
+SELECT tableoid::regclass, * FROM ONLY a;
+ tableoid |   aa   
+----------+--------
+ a        | newtoo
+ a        | newtoo
+ a        | newtoo
+(3 rows)
+
+DELETE FROM a;
+SELECT tableoid::regclass, * FROM a;
+ tableoid | aa 
+----------+----
+(0 rows)
+
+SELECT tableoid::regclass, * FROM b;
+ tableoid | aa | bb 
+----------+----+----
+(0 rows)
+
+SELECT tableoid::regclass, * FROM ONLY a;
+ tableoid | aa 
+----------+----
+(0 rows)
+
+DROP TABLE a CASCADE;
+NOTICE:  drop cascades to foreign table b
+DROP TABLE loct;
+-- Check SELECT FOR UPDATE/SHARE with an inherited source table
+create table loct1 (f1 int, f2 int, f3 int);
+create table loct2 (f1 int, f2 int, f3 int);
+create table foo (f1 int, f2 int);
+create foreign table foo2 (f3 int) inherits (foo)
+  server loopback options (table_name 'loct1');
+create table bar (f1 int, f2 int);
+create foreign table bar2 (f3 int) inherits (bar)
+  server loopback options (table_name 'loct2');
+insert into foo values(1,1);
+insert into foo values(3,3);
+insert into foo2 values(2,2,2);
+insert into foo2 values(4,4,4);
+insert into bar values(1,11);
+insert into bar values(2,22);
+insert into bar values(6,66);
+insert into bar2 values(3,33,33);
+insert into bar2 values(4,44,44);
+insert into bar2 values(7,77,77);
+explain (verbose, costs off)
+select * from bar where f1 in (select f1 from foo) for update;
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ LockRows
+   Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid, foo.ctid, foo.*, foo.tableoid
+   ->  Hash Join
+         Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid, foo.ctid, foo.*, foo.tableoid
+         Hash Cond: (bar.f1 = foo.f1)
+         ->  Append
+               ->  Seq Scan on public.bar
+                     Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid
+               ->  Foreign Scan on public.bar2
+                     Output: bar2.f1, bar2.f2, bar2.ctid, bar2.*, bar2.tableoid
+                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
+         ->  Hash
+               Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+               ->  HashAggregate
+                     Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                     Group Key: foo.f1
+                     ->  Append
+                           ->  Seq Scan on public.foo
+                                 Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                           ->  Foreign Scan on public.foo2
+                                 Output: foo2.ctid, foo2.*, foo2.tableoid, foo2.f1
+                                 Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
+(22 rows)
+
+select * from bar where f1 in (select f1 from foo) for update;
+ f1 | f2 
+----+----
+  1 | 11
+  2 | 22
+  3 | 33
+  4 | 44
+(4 rows)
+
+explain (verbose, costs off)
+select * from bar where f1 in (select f1 from foo) for share;
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ LockRows
+   Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid, foo.ctid, foo.*, foo.tableoid
+   ->  Hash Join
+         Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid, foo.ctid, foo.*, foo.tableoid
+         Hash Cond: (bar.f1 = foo.f1)
+         ->  Append
+               ->  Seq Scan on public.bar
+                     Output: bar.f1, bar.f2, bar.ctid, bar.*, bar.tableoid
+               ->  Foreign Scan on public.bar2
+                     Output: bar2.f1, bar2.f2, bar2.ctid, bar2.*, bar2.tableoid
+                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR SHARE
+         ->  Hash
+               Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+               ->  HashAggregate
+                     Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                     Group Key: foo.f1
+                     ->  Append
+                           ->  Seq Scan on public.foo
+                                 Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                           ->  Foreign Scan on public.foo2
+                                 Output: foo2.ctid, foo2.*, foo2.tableoid, foo2.f1
+                                 Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
+(22 rows)
+
+select * from bar where f1 in (select f1 from foo) for share;
+ f1 | f2 
+----+----
+  1 | 11
+  2 | 22
+  3 | 33
+  4 | 44
+(4 rows)
+
+-- Check UPDATE with inherited target and an inherited source table
+explain (verbose, costs off)
+update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
+                                         QUERY PLAN                                          
+---------------------------------------------------------------------------------------------
+ Update on public.bar
+   Update on public.bar
+   Foreign Update on public.bar2
+     Remote SQL: UPDATE public.loct2 SET f2 = $2 WHERE ctid = $1
+   ->  Hash Join
+         Output: bar.f1, (bar.f2 + 100), bar.ctid, foo.ctid, foo.*, foo.tableoid
+         Hash Cond: (bar.f1 = foo.f1)
+         ->  Seq Scan on public.bar
+               Output: bar.f1, bar.f2, bar.ctid
+         ->  Hash
+               Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+               ->  HashAggregate
+                     Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                     Group Key: foo.f1
+                     ->  Append
+                           ->  Seq Scan on public.foo
+                                 Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                           ->  Foreign Scan on public.foo2
+                                 Output: foo2.ctid, foo2.*, foo2.tableoid, foo2.f1
+                                 Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
+   ->  Hash Join
+         Output: bar2.f1, (bar2.f2 + 100), bar2.f3, bar2.ctid, foo.ctid, foo.*, foo.tableoid
+         Hash Cond: (bar2.f1 = foo.f1)
+         ->  Foreign Scan on public.bar2
+               Output: bar2.f1, bar2.f2, bar2.f3, bar2.ctid
+               Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
+         ->  Hash
+               Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+               ->  HashAggregate
+                     Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                     Group Key: foo.f1
+                     ->  Append
+                           ->  Seq Scan on public.foo
+                                 Output: foo.ctid, foo.*, foo.tableoid, foo.f1
+                           ->  Foreign Scan on public.foo2
+                                 Output: foo2.ctid, foo2.*, foo2.tableoid, foo2.f1
+                                 Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
+(37 rows)
+
+update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
+select tableoid::regclass, * from bar order by 1,2;
+ tableoid | f1 | f2  
+----------+----+-----
+ bar      |  1 | 111
+ bar      |  2 | 122
+ bar      |  6 |  66
+ bar2     |  3 | 133
+ bar2     |  4 | 144
+ bar2     |  7 |  77
+(6 rows)
+
+-- Check UPDATE with inherited target and an appendrel subquery
+explain (verbose, costs off)
+update bar set f2 = f2 + 100
+from
+  ( select f1 from foo union all select f1+3 from foo ) ss
+where bar.f1 = ss.f1;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Update on public.bar
+   Update on public.bar
+   Foreign Update on public.bar2
+     Remote SQL: UPDATE public.loct2 SET f2 = $2 WHERE ctid = $1
+   ->  Hash Join
+         Output: bar.f1, (bar.f2 + 100), bar.ctid, (ROW(foo.f1))
+         Hash Cond: (foo.f1 = bar.f1)
+         ->  Append
+               ->  Seq Scan on public.foo
+                     Output: ROW(foo.f1), foo.f1
+               ->  Foreign Scan on public.foo2
+                     Output: ROW(foo2.f1), foo2.f1
+                     Remote SQL: SELECT f1 FROM public.loct1
+               ->  Seq Scan on public.foo foo_1
+                     Output: ROW((foo_1.f1 + 3)), (foo_1.f1 + 3)
+               ->  Foreign Scan on public.foo2 foo2_1
+                     Output: ROW((foo2_1.f1 + 3)), (foo2_1.f1 + 3)
+                     Remote SQL: SELECT f1 FROM public.loct1
+         ->  Hash
+               Output: bar.f1, bar.f2, bar.ctid
+               ->  Seq Scan on public.bar
+                     Output: bar.f1, bar.f2, bar.ctid
+   ->  Merge Join
+         Output: bar2.f1, (bar2.f2 + 100), bar2.f3, bar2.ctid, (ROW(foo.f1))
+         Merge Cond: (bar2.f1 = foo.f1)
+         ->  Sort
+               Output: bar2.f1, bar2.f2, bar2.f3, bar2.ctid
+               Sort Key: bar2.f1
+               ->  Foreign Scan on public.bar2
+                     Output: bar2.f1, bar2.f2, bar2.f3, bar2.ctid
+                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
+         ->  Sort
+               Output: (ROW(foo.f1)), foo.f1
+               Sort Key: foo.f1
+               ->  Append
+                     ->  Seq Scan on public.foo
+                           Output: ROW(foo.f1), foo.f1
+                     ->  Foreign Scan on public.foo2
+                           Output: ROW(foo2.f1), foo2.f1
+                           Remote SQL: SELECT f1 FROM public.loct1
+                     ->  Seq Scan on public.foo foo_1
+                           Output: ROW((foo_1.f1 + 3)), (foo_1.f1 + 3)
+                     ->  Foreign Scan on public.foo2 foo2_1
+                           Output: ROW((foo2_1.f1 + 3)), (foo2_1.f1 + 3)
+                           Remote SQL: SELECT f1 FROM public.loct1
+(45 rows)
+
+update bar set f2 = f2 + 100
+from
+  ( select f1 from foo union all select f1+3 from foo ) ss
+where bar.f1 = ss.f1;
+select tableoid::regclass, * from bar order by 1,2;
+ tableoid | f1 | f2  
+----------+----+-----
+ bar      |  1 | 211
+ bar      |  2 | 222
+ bar      |  6 | 166
+ bar2     |  3 | 233
+ bar2     |  4 | 244
+ bar2     |  7 | 177
+(6 rows)
+
+-- Test that WHERE CURRENT OF is not supported
+begin;
+declare c cursor for select * from bar where f1 = 7;
+fetch from c;
+ f1 | f2  
+----+-----
+  7 | 177
+(1 row)
+
+update bar set f2 = null where current of c;
+ERROR:  WHERE CURRENT OF is not supported for this table type
+rollback;
+drop table foo cascade;
+NOTICE:  drop cascades to foreign table foo2
+drop table bar cascade;
+NOTICE:  drop cascades to foreign table bar2
+drop table loct1;
+drop table loct2;
 -- ===================================================================
 -- test IMPORT FOREIGN SCHEMA
 -- ===================================================================

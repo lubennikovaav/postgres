@@ -29,7 +29,6 @@
 <!-- (applicable to all output formats) -->
 
 (define draft-mode              #f)
-(define website-stylesheet      #f)
 
 (define pgsql-docs-list "pgsql-docs@postgresql.org")
 
@@ -187,6 +186,7 @@
 (define %root-filename%         "index")
 (define %link-mailto-url%       (string-append "mailto:" pgsql-docs-list))
 (define %use-id-as-filename%    #t)
+(define website-stylesheet      #f)
 (define %stylesheet%            (if website-stylesheet "http://www.postgresql.org/media/css/docs.css" "stylesheet.css"))
 (define %graphic-default-extension% "gif")
 (define %body-attr%             '())
@@ -617,7 +617,7 @@
 
 ;; By default, the part and reference title pages get wrong page
 ;; numbers: The first title page gets roman numerals carried over from
-;; preface/toc -- we want arabic numerals.  We also need to make sure
+;; preface/toc -- we want Arabic numerals.  We also need to make sure
 ;; that page-number-restart is set of #f explicitly, because otherwise
 ;; it will carry over from the previous component, which is not good.
 ;;

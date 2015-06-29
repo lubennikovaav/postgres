@@ -7,7 +7,7 @@
  * Client-side code should include postgres_fe.h instead.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1995, Regents of the University of California
  *
  * src/include/postgres.h
@@ -54,11 +54,11 @@
  */
 
 /*
- * struct varatt_external is a "TOAST pointer", that is, the information needed
- * to fetch a Datum stored in an out-of-line on-disk Datum. The data is
- * compressed if and only if va_extsize < va_rawsize - VARHDRSZ.  This struct
- * must not contain any padding, because we sometimes compare pointers using
- * memcmp.
+ * struct varatt_external is a traditional "TOAST pointer", that is, the
+ * information needed to fetch a Datum stored out-of-line in a TOAST table.
+ * The data is compressed if and only if va_extsize < va_rawsize - VARHDRSZ.
+ * This struct must not contain any padding, because we sometimes compare
+ * these pointers using memcmp.
  *
  * Note that this information is stored unaligned within actual tuples, so
  * you need to memcpy from the tuple into a local struct variable before
@@ -74,33 +74,58 @@ typedef struct varatt_external
 }	varatt_external;
 
 /*
- * Out-of-line Datum thats stored in memory in contrast to varatt_external
- * pointers which points to data in an external toast relation.
+ * struct varatt_indirect is a "TOAST pointer" representing an out-of-line
+ * Datum that's stored in memory, not in an external toast relation.
+ * The creator of such a Datum is entirely responsible that the referenced
+ * storage survives for as long as referencing pointer Datums can exist.
  *
- * Note that just as varatt_external's this is stored unaligned within the
- * tuple.
+ * Note that just as for struct varatt_external, this struct is stored
+ * unaligned within any containing tuple.
  */
 typedef struct varatt_indirect
 {
 	struct varlena *pointer;	/* Pointer to in-memory varlena */
 }	varatt_indirect;
 
+/*
+ * struct varatt_expanded is a "TOAST pointer" representing an out-of-line
+ * Datum that is stored in memory, in some type-specific, not necessarily
+ * physically contiguous format that is convenient for computation not
+ * storage.  APIs for this, in particular the definition of struct
+ * ExpandedObjectHeader, are in src/include/utils/expandeddatum.h.
+ *
+ * Note that just as for struct varatt_external, this struct is stored
+ * unaligned within any containing tuple.
+ */
+typedef struct ExpandedObjectHeader ExpandedObjectHeader;
+
+typedef struct varatt_expanded
+{
+	ExpandedObjectHeader *eohptr;
+} varatt_expanded;
 
 /*
- * Type of external toast datum stored. The peculiar value for VARTAG_ONDISK
- * comes from the requirement for on-disk compatibility with the older
- * definitions of varattrib_1b_e where v_tag was named va_len_1be...
+ * Type tag for the various sorts of "TOAST pointer" datums.  The peculiar
+ * value for VARTAG_ONDISK comes from a requirement for on-disk compatibility
+ * with a previous notion that the tag field was the pointer datum's length.
  */
 typedef enum vartag_external
 {
 	VARTAG_INDIRECT = 1,
+	VARTAG_EXPANDED_RO = 2,
+	VARTAG_EXPANDED_RW = 3,
 	VARTAG_ONDISK = 18
 } vartag_external;
 
+/* this test relies on the specific tag values above */
+#define VARTAG_IS_EXPANDED(tag) \
+	(((tag) & ~1) == VARTAG_EXPANDED_RO)
+
 #define VARTAG_SIZE(tag) \
-	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) :		\
+	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) : \
+	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
 	 (tag) == VARTAG_ONDISK ? sizeof(varatt_external) : \
-	 TrapMacro(true, "unknown vartag"))
+	 TrapMacro(true, "unrecognized TOAST vartag"))
 
 /*
  * These structs describe the header of a varlena object that may have been
@@ -116,28 +141,28 @@ typedef union
 	struct						/* Normal varlena (4-byte length) */
 	{
 		uint32		va_header;
-		char		va_data[1];
+		char		va_data[FLEXIBLE_ARRAY_MEMBER];
 	}			va_4byte;
 	struct						/* Compressed-in-line format */
 	{
 		uint32		va_header;
 		uint32		va_rawsize; /* Original data size (excludes header) */
-		char		va_data[1]; /* Compressed data */
+		char		va_data[FLEXIBLE_ARRAY_MEMBER];		/* Compressed data */
 	}			va_compressed;
 } varattrib_4b;
 
 typedef struct
 {
 	uint8		va_header;
-	char		va_data[1];		/* Data begins here */
+	char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* Data begins here */
 } varattrib_1b;
 
-/* inline portion of a short varlena pointing to an external resource */
+/* TOAST pointers are a subset of varattrib_1b with an identifying tag byte */
 typedef struct
 {
 	uint8		va_header;		/* Always 0x80 or 0x01 */
 	uint8		va_tag;			/* Type of datum */
-	char		va_data[1];		/* Data (of the type indicated by va_tag) */
+	char		va_data[FLEXIBLE_ARRAY_MEMBER]; /* Type-specific data */
 } varattrib_1b_e;
 
 /*
@@ -162,8 +187,8 @@ typedef struct
  * this lets us disambiguate alignment padding bytes from the start of an
  * unaligned datum.  (We now *require* pad bytes to be filled with zero!)
  *
- * In TOAST datums the tag field in varattrib_1b_e is used to discern whether
- * its an indirection pointer or more commonly an on-disk tuple.
+ * In TOAST pointers the va_tag field (see varattrib_1b_e) is used to discern
+ * the specific type and length of the pointer datum.
  */
 
 /*
@@ -293,6 +318,12 @@ typedef struct
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK)
 #define VARATT_IS_EXTERNAL_INDIRECT(PTR) \
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_INDIRECT)
+#define VARATT_IS_EXTERNAL_EXPANDED_RO(PTR) \
+	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_EXPANDED_RO)
+#define VARATT_IS_EXTERNAL_EXPANDED_RW(PTR) \
+	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_EXPANDED_RW)
+#define VARATT_IS_EXTERNAL_EXPANDED(PTR) \
+	(VARATT_IS_EXTERNAL(PTR) && VARTAG_IS_EXPANDED(VARTAG_EXTERNAL(PTR)))
 #define VARATT_IS_SHORT(PTR)				VARATT_IS_1B(PTR)
 #define VARATT_IS_EXTENDED(PTR)				(!VARATT_IS_4B_U(PTR))
 
@@ -686,6 +717,6 @@ extern Datum Float8GetDatum(float8 X);
  */
 extern void ExceptionalCondition(const char *conditionName,
 					 const char *errorType,
-			 const char *fileName, int lineNumber) __attribute__((noreturn));
+			   const char *fileName, int lineNumber) pg_attribute_noreturn();
 
 #endif   /* POSTGRES_H */

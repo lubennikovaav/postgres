@@ -3,7 +3,7 @@
  * relcache.c
  *	  POSTGRES relation descriptor cache code
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -36,6 +36,7 @@
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
@@ -55,6 +56,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/schemapg.h"
 #include "catalog/storage.h"
+#include "commands/policy.h"
 #include "commands/trigger.h"
 #include "miscadmin.h"
 #include "optimizer/clauses.h"
@@ -62,6 +64,7 @@
 #include "optimizer/prep.h"
 #include "optimizer/var.h"
 #include "rewrite/rewriteDefine.h"
+#include "rewrite/rowsecurity.h"
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
 #include "utils/array.h"
@@ -129,14 +132,6 @@ bool		criticalSharedRelcachesBuilt = false;
  * might already be obsolete.
  */
 static long relcacheInvalsReceived = 0L;
-
-/*
- * This list remembers the OIDs of the non-shared relations cached in the
- * database's local relcache init file.  Note that there is no corresponding
- * list for the shared relcache init file, for reasons explained in the
- * comments for RelationCacheInitFileRemove.
- */
-static List *initFileRelationIds = NIL;
 
 /*
  * eoxact_list[] stores the OIDs of relations that (might) need AtEOXact
@@ -268,6 +263,7 @@ static TupleDesc GetPgClassDescriptor(void);
 static TupleDesc GetPgIndexDescriptor(void);
 static void AttrDefaultFetch(Relation relation);
 static void CheckConstraintFetch(Relation relation);
+static int	CheckConstraintCmp(const void *a, const void *b);
 static List *insert_ordered_oid(List *list, Oid datum);
 static void IndexSupportInitialize(oidvector *indclass,
 					   RegProcedure *indexSupport,
@@ -846,6 +842,87 @@ equalRuleLocks(RuleLock *rlock1, RuleLock *rlock2)
 	return true;
 }
 
+/*
+ *		equalPolicy
+ *
+ *		Determine whether two policies are equivalent
+ */
+static bool
+equalPolicy(RowSecurityPolicy *policy1, RowSecurityPolicy *policy2)
+{
+	int			i;
+	Oid		   *r1,
+			   *r2;
+
+	if (policy1 != NULL)
+	{
+		if (policy2 == NULL)
+			return false;
+
+		if (policy1->policy_id != policy2->policy_id)
+			return false;
+		if (policy1->polcmd != policy2->polcmd)
+			return false;
+		if (policy1->hassublinks != policy2->hassublinks)
+			return false;
+		if (strcmp(policy1->policy_name, policy2->policy_name) != 0)
+			return false;
+		if (ARR_DIMS(policy1->roles)[0] != ARR_DIMS(policy2->roles)[0])
+			return false;
+
+		r1 = (Oid *) ARR_DATA_PTR(policy1->roles);
+		r2 = (Oid *) ARR_DATA_PTR(policy2->roles);
+
+		for (i = 0; i < ARR_DIMS(policy1->roles)[0]; i++)
+		{
+			if (r1[i] != r2[i])
+				return false;
+		}
+
+		if (!equal(policy1->qual, policy2->qual))
+			return false;
+		if (!equal(policy1->with_check_qual, policy2->with_check_qual))
+			return false;
+	}
+	else if (policy2 != NULL)
+		return false;
+
+	return true;
+}
+
+/*
+ *		equalRSDesc
+ *
+ *		Determine whether two RowSecurityDesc's are equivalent
+ */
+static bool
+equalRSDesc(RowSecurityDesc *rsdesc1, RowSecurityDesc *rsdesc2)
+{
+	ListCell   *lc,
+			   *rc;
+
+	if (rsdesc1 == NULL && rsdesc2 == NULL)
+		return true;
+
+	if ((rsdesc1 != NULL && rsdesc2 == NULL) ||
+		(rsdesc1 == NULL && rsdesc2 != NULL))
+		return false;
+
+	if (list_length(rsdesc1->policies) != list_length(rsdesc2->policies))
+		return false;
+
+	/* RelationBuildRowSecurity should build policies in order */
+	forboth(lc, rsdesc1->policies, rc, rsdesc2->policies)
+	{
+		RowSecurityPolicy *l = (RowSecurityPolicy *) lfirst(lc);
+		RowSecurityPolicy *r = (RowSecurityPolicy *) lfirst(rc);
+
+		if (!equalPolicy(l, r))
+			return false;
+	}
+
+	return true;
+}
 
 /*
  *		RelationBuildDesc
@@ -913,7 +990,7 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 			relation->rd_islocaltemp = false;
 			break;
 		case RELPERSISTENCE_TEMP:
-			if (isTempOrToastNamespace(relation->rd_rel->relnamespace))
+			if (isTempOrTempToastNamespace(relation->rd_rel->relnamespace))
 			{
 				relation->rd_backend = MyBackendId;
 				relation->rd_islocaltemp = true;
@@ -965,6 +1042,11 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		RelationBuildTriggers(relation);
 	else
 		relation->trigdesc = NULL;
+
+	if (relation->rd_rel->relrowsecurity)
+		RelationBuildRowSecurity(relation);
+	else
+		relation->rd_rsdesc = NULL;
 
 	/*
 	 * if it's an index, initialize index-related information
@@ -1320,9 +1402,8 @@ LookupOpclassInfo(Oid operatorClassOid,
 		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
-		ctl.hash = oid_hash;
 		OpClassCache = hash_create("Operator class cache", 64,
-								   &ctl, HASH_ELEM | HASH_FUNCTION);
+								   &ctl, HASH_ELEM | HASH_BLOBS);
 
 		/* Also make sure CacheMemoryContext exists */
 		if (!CacheMemoryContext)
@@ -1936,6 +2017,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_indexcxt);
 	if (relation->rd_rulescxt)
 		MemoryContextDelete(relation->rd_rulescxt);
+	if (relation->rd_rsdesc)
+		MemoryContextDelete(relation->rd_rsdesc->rscxt);
 	if (relation->rd_fdwroutine)
 		pfree(relation->rd_fdwroutine);
 	pfree(relation);
@@ -2096,19 +2179,37 @@ RelationClearRelation(Relation relation, bool rebuild)
 		Oid			save_relid = RelationGetRelid(relation);
 		bool		keep_tupdesc;
 		bool		keep_rules;
+		bool		keep_policies;
 
 		/* Build temporary entry, but don't link it into hashtable */
 		newrel = RelationBuildDesc(save_relid, false);
 		if (newrel == NULL)
 		{
-			/* Should only get here if relation was deleted */
-			RelationCacheDelete(relation);
-			RelationDestroyRelation(relation, false);
+			/*
+			 * We can validly get here, if we're using a historic snapshot in
+			 * which a relation, accessed from outside logical decoding, is
+			 * still invisible. In that case it's fine to just mark the
+			 * relation as invalid and return - it'll fully get reloaded by
+			 * the cache reset at the end of logical decoding (or at the next
+			 * access).  During normal processing we don't want to ignore this
+			 * case as it shouldn't happen there, as explained below.
+			 */
+			if (HistoricSnapshotActive())
+				return;
+
+			/*
+			 * This shouldn't happen as dropping a relation is intended to be
+			 * impossible if still referenced (c.f. CheckTableNotInUse()). But
+			 * if we get here anyway, we can't just delete the relcache entry,
+			 * as it possibly could get accessed later (as e.g. the error
+			 * might get trapped and handled via a subtransaction rollback).
+			 */
 			elog(ERROR, "relation %u deleted while still in use", save_relid);
 		}
 
 		keep_tupdesc = equalTupleDescs(relation->rd_att, newrel->rd_att);
 		keep_rules = equalRuleLocks(relation->rd_rules, newrel->rd_rules);
+		keep_policies = equalRSDesc(relation->rd_rsdesc, newrel->rd_rsdesc);
 
 		/*
 		 * Perform swapping of the relcache entry contents.  Within this
@@ -2157,6 +2258,8 @@ RelationClearRelation(Relation relation, bool rebuild)
 			SWAPFIELD(RuleLock *, rd_rules);
 			SWAPFIELD(MemoryContext, rd_rulescxt);
 		}
+		if (keep_policies)
+			SWAPFIELD(RowSecurityDesc *, rd_rsdesc);
 		/* toast OID override must be preserved */
 		SWAPFIELD(Oid, rd_toastoid);
 		/* pgstat_info must be preserved */
@@ -2811,7 +2914,7 @@ RelationBuildLocalRelation(const char *relname,
 			rel->rd_islocaltemp = false;
 			break;
 		case RELPERSISTENCE_TEMP:
-			Assert(isTempOrToastNamespace(relnamespace));
+			Assert(isTempOrTempToastNamespace(relnamespace));
 			rel->rd_backend = MyBackendId;
 			rel->rd_islocaltemp = true;
 			break;
@@ -2910,10 +3013,14 @@ RelationBuildLocalRelation(const char *relname,
  * The relation is marked with relfrozenxid = freezeXid (InvalidTransactionId
  * must be passed for indexes and sequences).  This should be a lower bound on
  * the XIDs that will be put into the new relation contents.
+ *
+ * The new filenode's persistence is set to the given value.  This is useful
+ * for the cases that are changing the relation's persistence; other callers
+ * need to pass the original relpersistence value.
  */
 void
-RelationSetNewRelfilenode(Relation relation, TransactionId freezeXid,
-						  MultiXactId minmulti)
+RelationSetNewRelfilenode(Relation relation, char persistence,
+						  TransactionId freezeXid, MultiXactId minmulti)
 {
 	Oid			newrelfilenode;
 	RelFileNodeBackend newrnode;
@@ -2930,7 +3037,7 @@ RelationSetNewRelfilenode(Relation relation, TransactionId freezeXid,
 
 	/* Allocate a new relfilenode */
 	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
-									   relation->rd_rel->relpersistence);
+									   persistence);
 
 	/*
 	 * Get a writable copy of the pg_class tuple for the given relation.
@@ -2953,7 +3060,7 @@ RelationSetNewRelfilenode(Relation relation, TransactionId freezeXid,
 	newrnode.node = relation->rd_node;
 	newrnode.node.relNode = newrelfilenode;
 	newrnode.backend = relation->rd_backend;
-	RelationCreateStorage(newrnode.node, relation->rd_rel->relpersistence);
+	RelationCreateStorage(newrnode.node, persistence);
 	smgrclosenode(newrnode);
 
 	/*
@@ -2983,6 +3090,7 @@ RelationSetNewRelfilenode(Relation relation, TransactionId freezeXid,
 	}
 	classform->relfrozenxid = freezeXid;
 	classform->relminmxid = minmulti;
+	classform->relpersistence = persistence;
 
 	simple_heap_update(pg_class, &tuple->t_self, tuple);
 	CatalogUpdateIndexes(pg_class, tuple);
@@ -3040,9 +3148,8 @@ RelationCacheInitialize(void)
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RelIdCacheEnt);
-	ctl.hash = oid_hash;
 	RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
-								  &ctl, HASH_ELEM | HASH_FUNCTION);
+								  &ctl, HASH_ELEM | HASH_BLOBS);
 
 	/*
 	 * relation mapper needs to be initialized too
@@ -3242,8 +3349,8 @@ RelationCacheInitializePhase3(void)
 	 * wrong in the results from formrdesc or the relcache cache file. If we
 	 * faked up relcache entries using formrdesc, then read the real pg_class
 	 * rows and replace the fake entries with them. Also, if any of the
-	 * relcache entries have rules or triggers, load that info the hard way
-	 * since it isn't recorded in the cache file.
+	 * relcache entries have rules, triggers, or security policies, load that
+	 * info the hard way since it isn't recorded in the cache file.
 	 *
 	 * Whenever we access the catalogs to read data, there is a possibility of
 	 * a shared-inval cache flush causing relcache entries to be removed.
@@ -3334,6 +3441,21 @@ RelationCacheInitializePhase3(void)
 			restart = true;
 		}
 
+		/*
+		 * Re-load the row security policies if the relation has them, since
+		 * they are not preserved in the cache.  Note that we can never NOT
+		 * have a policy while relrowsecurity is true,
+		 * RelationBuildRowSecurity will create a single default-deny policy
+		 * if there is no policy defined in pg_policy.
+		 */
+		if (relation->rd_rel->relrowsecurity && relation->rd_rsdesc == NULL)
+		{
+			RelationBuildRowSecurity(relation);
+
+			Assert(relation->rd_rsdesc != NULL);
+			restart = true;
+		}
+
 		/* Release hold on the relation */
 		RelationDecrementReferenceCount(relation);
 
@@ -3358,9 +3480,6 @@ RelationCacheInitializePhase3(void)
 		 * that the init files will be most useful for future backends.
 		 */
 		InitCatalogCachePhase2();
-
-		/* reset initFileRelationIds list; we'll fill it during write */
-		initFileRelationIds = NIL;
 
 		/* now write the files */
 		write_relcache_init_file(true);
@@ -3552,8 +3671,6 @@ CheckConstraintFetch(Relation relation)
 	SysScanDesc conscan;
 	ScanKeyData skey[1];
 	HeapTuple	htup;
-	Datum		val;
-	bool		isnull;
 	int			found = 0;
 
 	ScanKeyInit(&skey[0],
@@ -3568,6 +3685,9 @@ CheckConstraintFetch(Relation relation)
 	while (HeapTupleIsValid(htup = systable_getnext(conscan)))
 	{
 		Form_pg_constraint conform = (Form_pg_constraint) GETSTRUCT(htup);
+		Datum		val;
+		bool		isnull;
+		char	   *s;
 
 		/* We want check constraints only */
 		if (conform->contype != CONSTRAINT_CHECK)
@@ -3590,8 +3710,11 @@ CheckConstraintFetch(Relation relation)
 			elog(ERROR, "null conbin for rel %s",
 				 RelationGetRelationName(relation));
 
-		check[found].ccbin = MemoryContextStrdup(CacheMemoryContext,
-												 TextDatumGetCString(val));
+		/* detoast and convert to cstring in caller's context */
+		s = TextDatumGetCString(val);
+		check[found].ccbin = MemoryContextStrdup(CacheMemoryContext, s);
+		pfree(s);
+
 		found++;
 	}
 
@@ -3601,6 +3724,22 @@ CheckConstraintFetch(Relation relation)
 	if (found != ncheck)
 		elog(ERROR, "%d constraint record(s) missing for rel %s",
 			 ncheck - found, RelationGetRelationName(relation));
+
+	/* Sort the records so that CHECKs are applied in a deterministic order */
+	if (ncheck > 1)
+		qsort(check, ncheck, sizeof(ConstrCheck), CheckConstraintCmp);
+}
+
+/*
+ * qsort comparator to sort ConstrCheck entries by name
+ */
+static int
+CheckConstraintCmp(const void *a, const void *b)
+{
+	const ConstrCheck *ca = (const ConstrCheck *) a;
+	const ConstrCheck *cb = (const ConstrCheck *) b;
+
+	return strcmp(ca->ccname, cb->ccname);
 }
 
 /*
@@ -4702,6 +4841,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_rules = NULL;
 		rel->rd_rulescxt = NULL;
 		rel->trigdesc = NULL;
+		rel->rd_rsdesc = NULL;
 		rel->rd_indexprs = NIL;
 		rel->rd_indpred = NIL;
 		rel->rd_exclops = NULL;
@@ -4739,21 +4879,32 @@ load_relcache_init_file(bool shared)
 	}
 
 	/*
-	 * We reached the end of the init file without apparent problem. Did we
-	 * get the right number of nailed items?  (This is a useful crosscheck in
-	 * case the set of critical rels or indexes changes.)
+	 * We reached the end of the init file without apparent problem.  Did we
+	 * get the right number of nailed items?  This is a useful crosscheck in
+	 * case the set of critical rels or indexes changes.  However, that should
+	 * not happen in a normally-running system, so let's bleat if it does.
 	 */
 	if (shared)
 	{
 		if (nailed_rels != NUM_CRITICAL_SHARED_RELS ||
 			nailed_indexes != NUM_CRITICAL_SHARED_INDEXES)
+		{
+			elog(WARNING, "found %d nailed shared rels and %d nailed shared indexes in init file, but expected %d and %d respectively",
+				 nailed_rels, nailed_indexes,
+				 NUM_CRITICAL_SHARED_RELS, NUM_CRITICAL_SHARED_INDEXES);
 			goto read_failed;
+		}
 	}
 	else
 	{
 		if (nailed_rels != NUM_CRITICAL_LOCAL_RELS ||
 			nailed_indexes != NUM_CRITICAL_LOCAL_INDEXES)
+		{
+			elog(WARNING, "found %d nailed rels and %d nailed indexes in init file, but expected %d and %d respectively",
+				 nailed_rels, nailed_indexes,
+				 NUM_CRITICAL_LOCAL_RELS, NUM_CRITICAL_LOCAL_INDEXES);
 			goto read_failed;
+		}
 	}
 
 	/*
@@ -4764,10 +4915,6 @@ load_relcache_init_file(bool shared)
 	for (relno = 0; relno < num_rels; relno++)
 	{
 		RelationCacheInsert(rels[relno], false);
-		/* also make a list of their OIDs, for RelationIdIsInInitFile */
-		if (!shared)
-			initFileRelationIds = lcons_oid(RelationGetRelid(rels[relno]),
-											initFileRelationIds);
 	}
 
 	pfree(rels);
@@ -4804,8 +4951,14 @@ write_relcache_init_file(bool shared)
 	int			magic;
 	HASH_SEQ_STATUS status;
 	RelIdCacheEnt *idhentry;
-	MemoryContext oldcxt;
 	int			i;
+
+	/*
+	 * If we have already received any relcache inval events, there's no
+	 * chance of succeeding so we may as well skip the whole thing.
+	 */
+	if (relcacheInvalsReceived != 0L)
+		return;
 
 	/*
 	 * We must write a temporary file and rename it into place. Otherwise,
@@ -4866,6 +5019,23 @@ write_relcache_init_file(bool shared)
 		if (relform->relisshared != shared)
 			continue;
 
+		/*
+		 * Ignore if not supposed to be in init file.  We can allow any shared
+		 * relation that's been loaded so far to be in the shared init file,
+		 * but unshared relations must be ones that should be in the local
+		 * file per RelationIdIsInInitFile.  (Note: if you want to change the
+		 * criterion for rels to be kept in the init file, see also inval.c.
+		 * The reason for filtering here is to be sure that we don't put
+		 * anything into the local init file for which a relcache inval would
+		 * not cause invalidation of that init file.)
+		 */
+		if (!shared && !RelationIdIsInInitFile(RelationGetRelid(rel)))
+		{
+			/* Nailed rels had better get stored. */
+			Assert(!rel->rd_isnailed);
+			continue;
+		}
+
 		/* first write the relcache entry proper */
 		write_item(rel, sizeof(RelationData), fp);
 
@@ -4921,15 +5091,6 @@ write_relcache_init_file(bool shared)
 			write_item(rel->rd_indoption,
 					   relform->relnatts * sizeof(int16),
 					   fp);
-		}
-
-		/* also make a list of their OIDs, for RelationIdIsInInitFile */
-		if (!shared)
-		{
-			oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
-			initFileRelationIds = lcons_oid(RelationGetRelid(rel),
-											initFileRelationIds);
-			MemoryContextSwitchTo(oldcxt);
 		}
 	}
 
@@ -4990,18 +5151,29 @@ write_item(const void *data, Size len, FILE *fp)
 }
 
 /*
- * Detect whether a given relation (identified by OID) is one of the ones
- * we store in the local relcache init file.
+ * Determine whether a given relation (identified by OID) is one of the ones
+ * we should store in the local relcache init file.
  *
- * Note that we effectively assume that all backends running in a database
- * would choose to store the same set of relations in the init file;
- * otherwise there are cases where we'd fail to detect the need for an init
- * file invalidation.  This does not seem likely to be a problem in practice.
+ * We must cache all nailed rels, and for efficiency we should cache every rel
+ * that supports a syscache.  The former set is almost but not quite a subset
+ * of the latter.  Currently, we must special-case TriggerRelidNameIndexId,
+ * which RelationCacheInitializePhase3 chooses to nail for efficiency reasons,
+ * but which does not support any syscache.
+ *
+ * Note: this function is currently never called for shared rels.  If it were,
+ * we'd probably also need a special case for DatabaseNameIndexId, which is
+ * critical but does not support a syscache.
  */
 bool
 RelationIdIsInInitFile(Oid relationId)
 {
-	return list_member_oid(initFileRelationIds, relationId);
+	if (relationId == TriggerRelidNameIndexId)
+	{
+		/* If this Assert fails, we don't need this special case anymore. */
+		Assert(!RelationSupportsSysCache(relationId));
+		return true;
+	}
+	return RelationSupportsSysCache(relationId);
 }
 
 /*

@@ -49,10 +49,16 @@ tarChecksum(char *header)
  * must always have space for 512 characters, which is a requirement by
  * the tar format.
  */
-void
+enum tarError
 tarCreateHeader(char *h, const char *filename, const char *linktarget,
 				size_t size, mode_t mode, uid_t uid, gid_t gid, time_t mtime)
 {
+	if (strlen(filename) > 99)
+		return TAR_NAME_TOO_LONG;
+
+	if (linktarget && strlen(linktarget) > 99)
+		return TAR_SYMLINK_TOO_LONG;
+
 	/*
 	 * Note: most of the fields in a tar header are not supposed to be
 	 * null-terminated.  We use sprintf, which will write a null after the
@@ -62,7 +68,7 @@ tarCreateHeader(char *h, const char *filename, const char *linktarget,
 	memset(h, 0, 512);			/* assume tar header size */
 
 	/* Name 100 */
-	sprintf(&h[0], "%.99s", filename);
+	strlcpy(&h[0], filename, 100);
 	if (linktarget != NULL || S_ISDIR(mode))
 	{
 		/*
@@ -77,8 +83,8 @@ tarCreateHeader(char *h, const char *filename, const char *linktarget,
 		h[flen + 1] = '\0';
 	}
 
-	/* Mode 8 */
-	sprintf(&h[100], "%07o ", (int) mode);
+	/* Mode 8 - this doesn't include the file type bits (S_IFMT)  */
+	sprintf(&h[100], "%07o ", (int) (mode & 07777));
 
 	/* User ID 8 */
 	sprintf(&h[108], "%07o ", (int) uid);
@@ -104,7 +110,7 @@ tarCreateHeader(char *h, const char *filename, const char *linktarget,
 		/* Type - Symbolic link */
 		sprintf(&h[156], "2");
 		/* Link Name 100 */
-		sprintf(&h[157], "%.99s", linktarget);
+		strlcpy(&h[157], linktarget, 100);
 	}
 	else if (S_ISDIR(mode))
 		/* Type - directory */
@@ -121,11 +127,11 @@ tarCreateHeader(char *h, const char *filename, const char *linktarget,
 
 	/* User 32 */
 	/* XXX: Do we need to care about setting correct username? */
-	sprintf(&h[265], "%.31s", "postgres");
+	strlcpy(&h[265], "postgres", 32);
 
 	/* Group 32 */
 	/* XXX: Do we need to care about setting correct group name? */
-	sprintf(&h[297], "%.31s", "postgres");
+	strlcpy(&h[297], "postgres", 32);
 
 	/* Major Dev 8 */
 	sprintf(&h[329], "%07o ", 0);
@@ -141,4 +147,6 @@ tarCreateHeader(char *h, const char *filename, const char *linktarget,
 	 * 6 digits, a space, and a null, which is legal per POSIX.
 	 */
 	sprintf(&h[148], "%06o ", tarChecksum(h));
+
+	return TAR_OK;
 }

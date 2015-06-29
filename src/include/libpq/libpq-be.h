@@ -8,7 +8,7 @@
  *	  Structs that need to be client-visible are in pqcomm.h.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/libpq/libpq-be.h
@@ -184,14 +184,16 @@ typedef struct Port
 #endif
 
 	/*
-	 * SSL structures (keep these last so that the locations of other fields
-	 * are the same whether or not you build with SSL)
+	 * SSL structures.
 	 */
-#ifdef USE_SSL
 	bool		ssl_in_use;
 	char	   *peer_cn;
 	bool		peer_cert_valid;
-#endif
+
+	/*
+	 * OpenSSL structures. (Keep these last so that the locations of other
+	 * fields are the same whether or not you build with OpenSSL.)
+	 */
 #ifdef USE_OPENSSL
 	SSL		   *ssl;
 	X509	   *peer;
@@ -205,11 +207,16 @@ typedef struct Port
  * SSL implementation (e.g. be-secure-openssl.c)
  */
 extern void be_tls_init(void);
-extern int be_tls_open_server(Port *port);
+extern int	be_tls_open_server(Port *port);
 extern void be_tls_close(Port *port);
-extern ssize_t be_tls_read(Port *port, void *ptr, size_t len);
-extern ssize_t be_tls_write(Port *port, void *ptr, size_t len);
+extern ssize_t be_tls_read(Port *port, void *ptr, size_t len, int *waitfor);
+extern ssize_t be_tls_write(Port *port, void *ptr, size_t len, int *waitfor);
 
+extern int	be_tls_get_cipher_bits(Port *port);
+extern bool be_tls_get_compression(Port *port);
+extern void be_tls_get_version(Port *port, char *ptr, size_t len);
+extern void be_tls_get_cipher(Port *port, char *ptr, size_t len);
+extern void be_tls_get_peerdn_name(Port *port, char *ptr, size_t len);
 #endif
 
 extern ProtocolVersion FrontendProtocol;

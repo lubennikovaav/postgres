@@ -3,7 +3,7 @@
  * clauses.c
  *	  routines to manipulate qualification clauses
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -97,7 +97,7 @@ static bool contain_mutable_functions_walker(Node *node, void *context);
 static bool contain_volatile_functions_walker(Node *node, void *context);
 static bool contain_volatile_functions_not_nextval_walker(Node *node, void *context);
 static bool contain_nonstrict_functions_walker(Node *node, void *context);
-static bool contain_leaky_functions_walker(Node *node, void *context);
+static bool contain_leaked_vars_walker(Node *node, void *context);
 static Relids find_nonnullable_rels_walker(Node *node, bool top_level);
 static List *find_nonnullable_vars_walker(Node *node, bool top_level);
 static bool is_strict_saop(ScalarArrayOpExpr *expr, bool falseOK);
@@ -1318,26 +1318,30 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 }
 
 /*****************************************************************************
- *		  Check clauses for non-leakproof functions
+ *		  Check clauses for Vars passed to non-leakproof functions
  *****************************************************************************/
 
 /*
- * contain_leaky_functions
- *		Recursively search for leaky functions within a clause.
+ * contain_leaked_vars
+ *		Recursively scan a clause to discover whether it contains any Var
+ *		nodes (of the current query level) that are passed as arguments to
+ *		leaky functions.
  *
- * Returns true if any function call with side-effect may be present in the
- * clause.  Qualifiers from outside the a security_barrier view should not
- * be pushed down into the view, lest the contents of tuples intended to be
- * filtered out be revealed via side effects.
+ * Returns true if the clause contains any non-leakproof functions that are
+ * passed Var nodes of the current query level, and which might therefore leak
+ * data.  Qualifiers from outside a security_barrier view that might leak data
+ * in this way should not be pushed down into the view in case the contents of
+ * tuples intended to be filtered out by the view are revealed by the leaky
+ * functions.
  */
 bool
-contain_leaky_functions(Node *clause)
+contain_leaked_vars(Node *clause)
 {
-	return contain_leaky_functions_walker(clause, NULL);
+	return contain_leaked_vars_walker(clause, NULL);
 }
 
 static bool
-contain_leaky_functions_walker(Node *node, void *context)
+contain_leaked_vars_walker(Node *node, void *context)
 {
 	if (node == NULL)
 		return false;
@@ -1369,7 +1373,8 @@ contain_leaky_functions_walker(Node *node, void *context)
 			{
 				FuncExpr   *expr = (FuncExpr *) node;
 
-				if (!get_func_leakproof(expr->funcid))
+				if (!get_func_leakproof(expr->funcid) &&
+					contain_var_clause((Node *) expr->args))
 					return true;
 			}
 			break;
@@ -1381,7 +1386,8 @@ contain_leaky_functions_walker(Node *node, void *context)
 				OpExpr	   *expr = (OpExpr *) node;
 
 				set_opfuncid(expr);
-				if (!get_func_leakproof(expr->opfuncid))
+				if (!get_func_leakproof(expr->opfuncid) &&
+					contain_var_clause((Node *) expr->args))
 					return true;
 			}
 			break;
@@ -1391,7 +1397,8 @@ contain_leaky_functions_walker(Node *node, void *context)
 				ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) node;
 
 				set_sa_opfuncid(expr);
-				if (!get_func_leakproof(expr->opfuncid))
+				if (!get_func_leakproof(expr->opfuncid) &&
+					contain_var_clause((Node *) expr->args))
 					return true;
 			}
 			break;
@@ -1401,15 +1408,29 @@ contain_leaky_functions_walker(Node *node, void *context)
 				CoerceViaIO *expr = (CoerceViaIO *) node;
 				Oid			funcid;
 				Oid			ioparam;
+				bool		leakproof;
 				bool		varlena;
 
+				/*
+				 * Data may be leaked if either the input or the output
+				 * function is leaky.
+				 */
 				getTypeInputInfo(exprType((Node *) expr->arg),
 								 &funcid, &ioparam);
-				if (!get_func_leakproof(funcid))
-					return true;
+				leakproof = get_func_leakproof(funcid);
 
-				getTypeOutputInfo(expr->resulttype, &funcid, &varlena);
-				if (!get_func_leakproof(funcid))
+				/*
+				 * If the input function is leakproof, then check the output
+				 * function.
+				 */
+				if (leakproof)
+				{
+					getTypeOutputInfo(expr->resulttype, &funcid, &varlena);
+					leakproof = get_func_leakproof(funcid);
+				}
+
+				if (!leakproof &&
+					contain_var_clause((Node *) expr->arg))
 					return true;
 			}
 			break;
@@ -1419,14 +1440,29 @@ contain_leaky_functions_walker(Node *node, void *context)
 				ArrayCoerceExpr *expr = (ArrayCoerceExpr *) node;
 				Oid			funcid;
 				Oid			ioparam;
+				bool		leakproof;
 				bool		varlena;
 
+				/*
+				 * Data may be leaked if either the input or the output
+				 * function is leaky.
+				 */
 				getTypeInputInfo(exprType((Node *) expr->arg),
 								 &funcid, &ioparam);
-				if (!get_func_leakproof(funcid))
-					return true;
-				getTypeOutputInfo(expr->resulttype, &funcid, &varlena);
-				if (!get_func_leakproof(funcid))
+				leakproof = get_func_leakproof(funcid);
+
+				/*
+				 * If the input function is leakproof, then check the output
+				 * function.
+				 */
+				if (leakproof)
+				{
+					getTypeOutputInfo(expr->resulttype, &funcid, &varlena);
+					leakproof = get_func_leakproof(funcid);
+				}
+
+				if (!leakproof &&
+					contain_var_clause((Node *) expr->arg))
 					return true;
 			}
 			break;
@@ -1435,12 +1471,22 @@ contain_leaky_functions_walker(Node *node, void *context)
 			{
 				RowCompareExpr *rcexpr = (RowCompareExpr *) node;
 				ListCell   *opid;
+				ListCell   *larg;
+				ListCell   *rarg;
 
-				foreach(opid, rcexpr->opnos)
+				/*
+				 * Check the comparison function and arguments passed to it
+				 * for each pair of row elements.
+				 */
+				forthree(opid, rcexpr->opnos,
+						 larg, rcexpr->largs,
+						 rarg, rcexpr->rargs)
 				{
 					Oid			funcid = get_opcode(lfirst_oid(opid));
 
-					if (!get_func_leakproof(funcid))
+					if (!get_func_leakproof(funcid) &&
+						(contain_var_clause((Node *) lfirst(larg)) ||
+						 contain_var_clause((Node *) lfirst(rarg))))
 						return true;
 				}
 			}
@@ -1455,7 +1501,7 @@ contain_leaky_functions_walker(Node *node, void *context)
 			 */
 			return true;
 	}
-	return expression_tree_walker(node, contain_leaky_functions_walker,
+	return expression_tree_walker(node, contain_leaked_vars_walker,
 								  context);
 }
 
@@ -3196,10 +3242,19 @@ eval_const_expressions_mutator(Node *node,
 				 * But it can arise while simplifying functions.)  Also, we
 				 * can optimize field selection from a RowExpr construct.
 				 *
-				 * We must however check that the declared type of the field
-				 * is still the same as when the FieldSelect was created ---
-				 * this can change if someone did ALTER COLUMN TYPE on the
-				 * rowtype.
+				 * However, replacing a whole-row Var in this way has a
+				 * pitfall: if we've already built the reltargetlist for the
+				 * source relation, then the whole-row Var is scheduled to be
+				 * produced by the relation scan, but the simple Var probably
+				 * isn't, which will lead to a failure in setrefs.c.  This is
+				 * not a problem when handling simple single-level queries, in
+				 * which expression simplification always happens first.  It
+				 * is a risk for lateral references from subqueries, though.
+				 * To avoid such failures, don't optimize uplevel references.
+				 *
+				 * We must also check that the declared type of the field is
+				 * still the same as when the FieldSelect was created --- this
+				 * can change if someone did ALTER COLUMN TYPE on the rowtype.
 				 */
 				FieldSelect *fselect = (FieldSelect *) node;
 				FieldSelect *newfselect;
@@ -3208,7 +3263,8 @@ eval_const_expressions_mutator(Node *node,
 				arg = eval_const_expressions_mutator((Node *) fselect->arg,
 													 context);
 				if (arg && IsA(arg, Var) &&
-					((Var *) arg)->varattno == InvalidAttrNumber)
+					((Var *) arg)->varattno == InvalidAttrNumber &&
+					((Var *) arg)->varlevelsup == 0)
 				{
 					if (rowtype_field_matches(((Var *) arg)->vartype,
 											  fselect->fieldnum,
@@ -3295,6 +3351,7 @@ eval_const_expressions_mutator(Node *node,
 						newntest->arg = (Expr *) relem;
 						newntest->nulltesttype = ntest->nulltesttype;
 						newntest->argisrow = type_is_rowtype(exprType(relem));
+						newntest->location = ntest->location;
 						newargs = lappend(newargs, newntest);
 					}
 					/* If all the inputs were constants, result is TRUE */
@@ -3333,6 +3390,7 @@ eval_const_expressions_mutator(Node *node,
 				newntest->arg = (Expr *) arg;
 				newntest->nulltesttype = ntest->nulltesttype;
 				newntest->argisrow = ntest->argisrow;
+				newntest->location = ntest->location;
 				return (Node *) newntest;
 			}
 		case T_BooleanTest:
@@ -3385,6 +3443,7 @@ eval_const_expressions_mutator(Node *node,
 				newbtest = makeNode(BooleanTest);
 				newbtest->arg = (Expr *) arg;
 				newbtest->booltesttype = btest->booltesttype;
+				newbtest->location = btest->location;
 				return (Node *) newbtest;
 			}
 		case T_PlaceHolderVar:
@@ -4294,6 +4353,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 		querytree->jointree->fromlist ||
 		querytree->jointree->quals ||
 		querytree->groupClause ||
+		querytree->groupingSets ||
 		querytree->havingQual ||
 		querytree->windowClause ||
 		querytree->distinctClause ||

@@ -4,7 +4,7 @@
  *	  interface routines for the postgres GiST index access method.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -16,6 +16,7 @@
 
 #include "access/genam.h"
 #include "access/gist_private.h"
+#include "access/xloginsert.h"
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
 #include "miscadmin.h"
@@ -393,6 +394,14 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			 */
 			GistPageSetNSN(ptr->page, oldnsn);
 		}
+
+		/*
+		 * gistXLogSplit() needs to WAL log a lot of pages, prepare WAL
+		 * insertion for that. NB: The number of pages and data segments
+		 * specified here must match the calculations in gistXLogSplit()!
+		 */
+		if (RelationNeedsWAL(rel))
+			XLogEnsureRecordSpace(npage, 1 + npage * 2);
 
 		START_CRIT_SECTION();
 
@@ -1264,6 +1273,23 @@ gistSplit(Relation r,
 	int			i;
 	SplitedPageLayout *res = NULL;
 
+	/* this should never recurse very deeply, but better safe than sorry */
+	check_stack_depth();
+
+	/* there's no point in splitting an empty page */
+	Assert(len > 0);
+
+	/*
+	 * If a single tuple doesn't fit on a page, no amount of splitting will
+	 * help.
+	 */
+	if (len == 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			errmsg("index row size %zu exceeds maximum %zu for index \"%s\"",
+				   IndexTupleSize(itup[0]), GiSTPageSize,
+				   RelationGetRelationName(r))));
+
 	memset(v.spl_lisnull, TRUE, sizeof(bool) * giststate->tupdesc->natts);
 	memset(v.spl_risnull, TRUE, sizeof(bool) * giststate->tupdesc->natts);
 	gistSplitByKey(r, page, itup, len, giststate, &v, 0);
@@ -1381,7 +1407,7 @@ initGISTstate(Relation index)
 		/* opclasses are not required to provide a Fetch method */
 		if (OidIsValid(index_getprocid(index, i + 1, GIST_FETCH_PROC)))
 			fmgr_info_copy(&(giststate->fetchFn[i]),
-						 index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
+						   index_getprocinfo(index, i + 1, GIST_FETCH_PROC),
 						   scanCxt);
 		else
 			giststate->fetchFn[i].fn_oid = InvalidOid;
@@ -1408,25 +1434,10 @@ initGISTstate(Relation index)
 	return giststate;
 }
 
-/*
- * Gistcanreturn is supposed to be true if ANY FetchFn method is defined.
- * If FetchFn exists it would be used in index-only scan
- * Thus the responsibility rests with the opclass developer.
- */
-
-Datum
-gistcanreturn(PG_FUNCTION_ARGS) {
-	Relation index = (Relation) PG_GETARG_POINTER(0);
-	int i = PG_GETARG_INT32(1);
-	if (OidIsValid(index_getprocid(index, i+1, GIST_FETCH_PROC)))
-		PG_RETURN_BOOL(true);
-	else
-		PG_RETURN_BOOL(false);
-}
-
 void
 freeGISTstate(GISTSTATE *giststate)
 {
 	/* It's sufficient to delete the scanCxt */
 	MemoryContextDelete(giststate->scanCxt);
 }
+

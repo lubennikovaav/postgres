@@ -3,7 +3,7 @@
  * parse_target.c
  *	  handle target lists
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -537,11 +537,12 @@ transformAssignedExpr(ParseState *pstate,
 
 /*
  * updateTargetListEntry()
- *	This is used in UPDATE statements only. It prepares an UPDATE
- *	TargetEntry for assignment to a column of the target table.
- *	This includes coercing the given value to the target column's type
- *	(if necessary), and dealing with any subfield names or subscripts
- *	attached to the target column itself.
+ *	This is used in UPDATE statements (and ON CONFLICT DO UPDATE)
+ *	only.  It prepares an UPDATE TargetEntry for assignment to a
+ *	column of the target table.  This includes coercing the given
+ *	value to the target column's type (if necessary), and dealing with
+ *	any subfield names or subscripts attached to the target column
+ *	itself.
  *
  * pstate		parse state
  * tle			target list entry to be modified
@@ -1654,11 +1655,16 @@ FigureColnameInternal(Node *node, char **name)
 			*name = strVal(llast(((FuncCall *) node)->funcname));
 			return 2;
 		case T_A_Expr:
-			/* make nullif() act like a regular function */
 			if (((A_Expr *) node)->kind == AEXPR_NULLIF)
 			{
+				/* make nullif() act like a regular function */
 				*name = "nullif";
 				return 2;
+			}
+			if (((A_Expr *) node)->kind == AEXPR_PAREN)
+			{
+				/* look through dummy parenthesis node */
+				return FigureColnameInternal(((A_Expr *) node)->lexpr, name);
 			}
 			break;
 		case T_TypeCast:
@@ -1675,6 +1681,10 @@ FigureColnameInternal(Node *node, char **name)
 			break;
 		case T_CollateClause:
 			return FigureColnameInternal(((CollateClause *) node)->arg, name);
+		case T_GroupingFunc:
+			/* make GROUPING() act like a regular function */
+			*name = "grouping";
+			return 2;
 		case T_SubLink:
 			switch (((SubLink *) node)->subLinkType)
 			{

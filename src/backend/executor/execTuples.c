@@ -12,7 +12,7 @@
  *	  This information is needed by routines manipulating tuples
  *	  (getattribute, formtuple, etc.).
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -70,14 +70,7 @@
  *		- ExecSeqScan() calls ExecStoreTuple() to take the result
  *		  tuple from ExecProject() and place it into the result tuple slot.
  *
- *		- ExecutePlan() calls ExecSelect(), which passes the result slot
- *		  to printtup(), which uses slot_getallattrs() to extract the
- *		  individual Datums for printing.
- *
- *		At ExecutorEnd()
- *		----------------
- *		- EndPlan() calls ExecResetTupleTable() to clean up any remaining
- *		  tuples left over from executing the query.
+ *		- ExecutePlan() calls the output function.
  *
  *		The important thing to watch in the executor code is how pointers
  *		to the slots containing tuples are passed instead of the tuples
@@ -95,6 +88,7 @@
 #include "nodes/nodeFuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
@@ -819,6 +813,52 @@ ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	return ExecStoreTuple(newTuple, dstslot, InvalidBuffer, true);
 }
 
+/* --------------------------------
+ *		ExecMakeSlotContentsReadOnly
+ *			Mark any R/W expanded datums in the slot as read-only.
+ *
+ * This is needed when a slot that might contain R/W datum references is to be
+ * used as input for general expression evaluation.  Since the expression(s)
+ * might contain more than one Var referencing the same R/W datum, we could
+ * get wrong answers if functions acting on those Vars thought they could
+ * modify the expanded value in-place.
+ *
+ * For notational reasons, we return the same slot passed in.
+ * --------------------------------
+ */
+TupleTableSlot *
+ExecMakeSlotContentsReadOnly(TupleTableSlot *slot)
+{
+	/*
+	 * sanity checks
+	 */
+	Assert(slot != NULL);
+	Assert(slot->tts_tupleDescriptor != NULL);
+	Assert(!slot->tts_isempty);
+
+	/*
+	 * If the slot contains a physical tuple, it can't contain any expanded
+	 * datums, because we flatten those when making a physical tuple.  This
+	 * might change later; but for now, we need do nothing unless the slot is
+	 * virtual.
+	 */
+	if (slot->tts_tuple == NULL)
+	{
+		Form_pg_attribute *att = slot->tts_tupleDescriptor->attrs;
+		int			attnum;
+
+		for (attnum = 0; attnum < slot->tts_nvalid; attnum++)
+		{
+			slot->tts_values[attnum] =
+				MakeExpandedObjectReadOnly(slot->tts_values[attnum],
+										   slot->tts_isnull[attnum],
+										   att[attnum]->attlen);
+		}
+	}
+
+	return slot;
+}
+
 
 /* ----------------------------------------------------------------
  *				convenience initialization routines
@@ -950,28 +990,25 @@ ExecTypeFromTLInternal(List *targetList, bool hasoid, bool skipjunk)
 /*
  * ExecTypeFromExprList - build a tuple descriptor from a list of Exprs
  *
- * Caller must also supply a list of field names (String nodes).
+ * This is roughly like ExecTypeFromTL, but we work from bare expressions
+ * not TargetEntrys.  No names are attached to the tupledesc's columns.
  */
 TupleDesc
-ExecTypeFromExprList(List *exprList, List *namesList)
+ExecTypeFromExprList(List *exprList)
 {
 	TupleDesc	typeInfo;
-	ListCell   *le;
-	ListCell   *ln;
+	ListCell   *lc;
 	int			cur_resno = 1;
-
-	Assert(list_length(exprList) == list_length(namesList));
 
 	typeInfo = CreateTemplateTupleDesc(list_length(exprList), false);
 
-	forboth(le, exprList, ln, namesList)
+	foreach(lc, exprList)
 	{
-		Node	   *e = lfirst(le);
-		char	   *n = strVal(lfirst(ln));
+		Node	   *e = lfirst(lc);
 
 		TupleDescInitEntry(typeInfo,
 						   cur_resno,
-						   n,
+						   NULL,
 						   exprType(e),
 						   exprTypmod(e),
 						   0);
@@ -982,6 +1019,54 @@ ExecTypeFromExprList(List *exprList, List *namesList)
 	}
 
 	return typeInfo;
+}
+
+/*
+ * ExecTypeSetColNames - set column names in a TupleDesc
+ *
+ * Column names must be provided as an alias list (list of String nodes).
+ *
+ * For some callers, the supplied tupdesc has a named rowtype (not RECORD)
+ * and it is moderately likely that the alias list matches the column names
+ * already present in the tupdesc.  If we do change any column names then
+ * we must reset the tupdesc's type to anonymous RECORD; but we avoid doing
+ * so if no names change.
+ */
+void
+ExecTypeSetColNames(TupleDesc typeInfo, List *namesList)
+{
+	bool		modified = false;
+	int			colno = 0;
+	ListCell   *lc;
+
+	foreach(lc, namesList)
+	{
+		char	   *cname = strVal(lfirst(lc));
+		Form_pg_attribute attr;
+
+		/* Guard against too-long names list */
+		if (colno >= typeInfo->natts)
+			break;
+		attr = typeInfo->attrs[colno++];
+
+		/* Ignore empty aliases (these must be for dropped columns) */
+		if (cname[0] == '\0')
+			continue;
+
+		/* Change tupdesc only if alias is actually different */
+		if (strcmp(cname, NameStr(attr->attname)) != 0)
+		{
+			namestrcpy(&(attr->attname), cname);
+			modified = true;
+		}
+	}
+
+	/* If we modified the tupdesc, it's now a new record type */
+	if (modified)
+	{
+		typeInfo->tdtypeid = RECORDOID;
+		typeInfo->tdtypmod = -1;
+	}
 }
 
 /*

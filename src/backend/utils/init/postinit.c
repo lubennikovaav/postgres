@@ -3,7 +3,7 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -409,32 +410,57 @@ InitCommunication(void)
 /*
  * pg_split_opts -- split a string of options and append it to an argv array
  *
- * NB: the input string is destructively modified!	Also, caller is responsible
- * for ensuring the argv array is large enough.  The maximum possible number
- * of arguments added by this routine is (strlen(optstr) + 1) / 2.
+ * The caller is responsible for ensuring the argv array is large enough.  The
+ * maximum possible number of arguments added by this routine is
+ * (strlen(optstr) + 1) / 2.
  *
- * Since no current POSTGRES arguments require any quoting characters,
- * we can use the simple-minded tactic of assuming each set of space-
- * delimited characters is a separate argv element.
- *
- * If you don't like that, well, we *used* to pass the whole option string
- * as ONE argument to execl(), which was even less intelligent...
+ * Because some option values can contain spaces we allow escaping using
+ * backslashes, with \\ representing a literal backslash.
  */
 void
 pg_split_opts(char **argv, int *argcp, char *optstr)
 {
+	StringInfoData s;
+
+	initStringInfo(&s);
+
 	while (*optstr)
 	{
+		bool		last_was_escape = false;
+
+		resetStringInfo(&s);
+
+		/* skip over leading space */
 		while (isspace((unsigned char) *optstr))
 			optstr++;
+
 		if (*optstr == '\0')
 			break;
-		argv[(*argcp)++] = optstr;
-		while (*optstr && !isspace((unsigned char) *optstr))
+
+		/*
+		 * Parse a single option + value, stopping at the first space, unless
+		 * it's escaped.
+		 */
+		while (*optstr)
+		{
+			if (isspace((unsigned char) *optstr) && !last_was_escape)
+				break;
+
+			if (!last_was_escape && *optstr == '\\')
+				last_was_escape = true;
+			else
+			{
+				last_was_escape = false;
+				appendStringInfoChar(&s, *optstr);
+			}
+
 			optstr++;
-		if (*optstr)
-			*optstr++ = '\0';
+		}
+
+		/* now store the option */
+		argv[(*argcp)++] = pstrdup(s.data);
 	}
+	resetStringInfo(&s);
 }
 
 /*
@@ -497,6 +523,9 @@ BaseInit(void)
  * name can be returned to the caller in out_dbname.  If out_dbname isn't
  * NULL, it must point to a buffer of size NAMEDATALEN.
  *
+ * Similarly, the username can be passed by name, using the username parameter,
+ * or by OID using the useroid parameter.
+ *
  * In bootstrap mode no parameters are used.  The autovacuum launcher process
  * doesn't use any parameters either, because it only goes far enough to be
  * able to read pg_database; it doesn't connect to any particular database.
@@ -511,7 +540,7 @@ BaseInit(void)
  */
 void
 InitPostgres(const char *in_dbname, Oid dboid, const char *username,
-			 char *out_dbname)
+			 Oid useroid, char *out_dbname)
 {
 	bool		bootstrap = IsBootstrapProcessingMode();
 	bool		am_superuser;
@@ -549,7 +578,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 */
 	if (!bootstrap)
 	{
-		RegisterTimeout(DEADLOCK_TIMEOUT, CheckDeadLock);
+		RegisterTimeout(DEADLOCK_TIMEOUT, CheckDeadLockAlert);
 		RegisterTimeout(STATEMENT_TIMEOUT, StatementTimeoutHandler);
 		RegisterTimeout(LOCK_TIMEOUT, LockTimeoutHandler);
 	}
@@ -666,18 +695,18 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("no roles are defined in this database system"),
 					 errhint("You should immediately run CREATE USER \"%s\" SUPERUSER;.",
-							 username)));
+							 username != NULL ? username : "postgres")));
 	}
 	else if (IsBackgroundWorker)
 	{
-		if (username == NULL)
+		if (username == NULL && !OidIsValid(useroid))
 		{
 			InitializeSessionUserIdStandalone();
 			am_superuser = true;
 		}
 		else
 		{
-			InitializeSessionUserId(username);
+			InitializeSessionUserId(username, useroid);
 			am_superuser = superuser();
 		}
 	}
@@ -686,7 +715,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		/* normal multiuser case */
 		Assert(MyProcPort != NULL);
 		PerformAuthentication(MyProcPort);
-		InitializeSessionUserId(username);
+		InitializeSessionUserId(username, useroid);
 		am_superuser = superuser();
 	}
 
@@ -798,7 +827,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		/* take database name from the caller, just for paranoia */
 		strlcpy(dbname, in_dbname, sizeof(dbname));
 	}
-	else
+	else if (OidIsValid(dboid))
 	{
 		/* caller specified database by OID */
 		HeapTuple	tuple;
@@ -818,10 +847,18 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		if (out_dbname)
 			strcpy(out_dbname, dbname);
 	}
-
-	/* Now we can mark our PGPROC entry with the database ID */
-	/* (We assume this is an atomic store so no lock is needed) */
-	MyProc->databaseId = MyDatabaseId;
+	else
+	{
+		/*
+		 * If this is a background worker not bound to any particular
+		 * database, we're done now.  Everything that follows only makes
+		 * sense if we are bound to a specific database.  We do need to
+		 * close the transaction we started before returning.
+		 */
+		if (!bootstrap)
+			CommitTransactionCommand();
+		return;
+	}
 
 	/*
 	 * Now, take a writer's lock on the database we are trying to connect to.
@@ -830,9 +867,13 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * pg_database).
 	 *
 	 * Note that the lock is not held long, only until the end of this startup
-	 * transaction.  This is OK since we are already advertising our use of
-	 * the database in the PGPROC array; anyone trying a DROP DATABASE after
-	 * this point will see us there.
+	 * transaction.  This is OK since we will advertise our use of the
+	 * database in the ProcArray before dropping the lock (in fact, that's the
+	 * next thing to do).  Anyone trying a DROP DATABASE after this point will
+	 * see us in the array once they have the lock.  Ordering is important for
+	 * this because we don't want to advertise ourselves as being in this
+	 * database until we have the lock; otherwise we create what amounts to a
+	 * deadlock with CountOtherDBBackends().
 	 *
 	 * Note: use of RowExclusiveLock here is reasonable because we envision
 	 * our session as being a concurrent writer of the database.  If we had a
@@ -843,6 +884,28 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	if (!bootstrap)
 		LockSharedObject(DatabaseRelationId, MyDatabaseId, 0,
 						 RowExclusiveLock);
+
+	/*
+	 * Now we can mark our PGPROC entry with the database ID.
+	 *
+	 * We assume this is an atomic store so no lock is needed; though actually
+	 * things would work fine even if it weren't atomic.  Anyone searching the
+	 * ProcArray for this database's ID should hold the database lock, so they
+	 * would not be executing concurrently with this store.  A process looking
+	 * for another database's ID could in theory see a chance match if it read
+	 * a partially-updated databaseId value; but as long as all such searches
+	 * wait and retry, as in CountOtherDBBackends(), they will certainly see
+	 * the correct value on their next try.
+	 */
+	MyProc->databaseId = MyDatabaseId;
+
+	/*
+	 * We established a catalog snapshot while reading pg_authid and/or
+	 * pg_database; but until we have set up MyDatabaseId, we won't react to
+	 * incoming sinval messages for unshared catalogs, so we won't realize it
+	 * if the snapshot has been invalidated.  Assume it's no good anymore.
+	 */
+	InvalidateCatalogSnapshot();
 
 	/*
 	 * Recheck pg_database to make sure the target database hasn't gone away.
@@ -957,7 +1020,7 @@ process_startup_options(Port *port, bool am_superuser)
 	GucContext	gucctx;
 	ListCell   *gucopts;
 
-	gucctx = am_superuser ? PGC_SUSET : PGC_BACKEND;
+	gucctx = am_superuser ? PGC_SU_BACKEND : PGC_BACKEND;
 
 	/*
 	 * First process any command-line switches that were included in the
@@ -981,7 +1044,6 @@ process_startup_options(Port *port, bool am_superuser)
 
 		av[ac++] = "postgres";
 
-		/* Note this mangles port->cmdline_options */
 		pg_split_opts(av, &ac, port->cmdline_options);
 
 		av[ac] = NULL;
@@ -1071,18 +1133,24 @@ ShutdownPostgres(int code, Datum arg)
 static void
 StatementTimeoutHandler(void)
 {
+	int			sig = SIGINT;
+
+	/*
+	 * During authentication the timeout is used to deal with
+	 * authentication_timeout - we want to quit in response to such timeouts.
+	 */
+	if (ClientAuthInProgress)
+		sig = SIGTERM;
+
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
-	kill(-MyProcPid, SIGINT);
+	kill(-MyProcPid, sig);
 #endif
-	kill(MyProcPid, SIGINT);
+	kill(MyProcPid, sig);
 }
 
 /*
  * LOCK_TIMEOUT handler: trigger a query-cancel interrupt.
- *
- * This is identical to StatementTimeoutHandler, but since it's so short,
- * we might as well keep the two functions separate for clarity.
  */
 static void
 LockTimeoutHandler(void)

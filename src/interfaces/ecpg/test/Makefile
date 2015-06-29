@@ -1,5 +1,8 @@
 # src/interfaces/ecpg/test/Makefile
 
+PGFILEDESC = "ECPG Test - regression tests for ECPG"
+PGAPPICON = win32
+
 subdir = src/interfaces/ecpg/test
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
@@ -8,15 +11,9 @@ override CPPFLAGS := \
 	'-I$(top_builddir)/src/port' \
 	'-I$(top_srcdir)/src/test/regress' \
 	'-DHOST_TUPLE="$(host_tuple)"' \
-	'-DMAKEPROG="$(MAKE)"' \
 	'-DSHELLPROG="$(SHELL)"' \
 	'-DDLSUFFIX="$(DLSUFFIX)"' \
 	$(CPPFLAGS)
-
-PGFILEDESC = "ECPG Test - regression tests for ECPG"
-
-# where to find psql for testing an existing installation
-PSQLDIR = $(bindir)
 
 # default encoding for regression tests
 ENCODING = SQL_ASCII
@@ -81,11 +78,11 @@ endif
 REGRESS_OPTS = --dbname=regress1,connectdb --create-role=connectuser,connectdb $(EXTRA_REGRESS_OPTS)
 
 check: all
-	./pg_regress $(REGRESS_OPTS) --top-builddir=$(top_builddir) --temp-install=./tmp_check $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule
+	$(with_temp_install) ./pg_regress $(REGRESS_OPTS) --temp-instance=./tmp_check --bindir= $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule
 
 # the same options, but with --listen-on-tcp
 checktcp: all
-	./pg_regress $(REGRESS_OPTS) --top-builddir=$(top_builddir) --temp-install=./tmp_check $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule_tcp --host=localhost
+	$(with_temp_install) ./pg_regress $(REGRESS_OPTS) --temp-instance=./tmp_check --bindir= $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule_tcp --host=localhost
 
 installcheck: all
-	./pg_regress $(REGRESS_OPTS) --psqldir='$(PSQLDIR)' --top-builddir=$(top_builddir) $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule
+	./pg_regress $(REGRESS_OPTS) --bindir='$(bindir)' $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule

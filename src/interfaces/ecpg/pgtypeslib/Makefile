@@ -2,7 +2,7 @@
 #
 # Makefile for ecpg pgtypes library
 #
-# Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/interfaces/ecpg/pgtypeslib/Makefile
@@ -19,7 +19,7 @@ SO_MAJOR_VERSION= 3
 SO_MINOR_VERSION= 6
 
 override CPPFLAGS := -I../include -I$(top_srcdir)/src/interfaces/ecpg/include \
-	-I$(top_srcdir)/src/include/utils -I$(libpq_srcdir) $(CPPFLAGS)
+	-DFRONTEND $(CPPFLAGS)
 override CFLAGS += $(PTHREAD_CFLAGS)
 
 # Need to recompile any libpgport object files

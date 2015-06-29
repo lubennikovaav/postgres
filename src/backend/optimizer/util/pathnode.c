@@ -3,7 +3,7 @@
  * pathnode.c
  *	  Routines to manipulate pathlists and create path nodes
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -37,6 +37,13 @@ typedef enum
 	COSTS_BETTER2,				/* second path is cheaper than first */
 	COSTS_DIFFERENT				/* neither path dominates the other on cost */
 } PathCostComparison;
+
+/*
+ * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
+ * XXX is it worth making this user-controllable?  It provides a tradeoff
+ * between planner runtime and the accuracy of path cost comparisons.
+ */
+#define STD_FUZZ_FACTOR 1.01
 
 static List *translate_sub_tlist(List *tlist, int relid);
 
@@ -138,19 +145,19 @@ compare_fractional_path_costs(Path *path1, Path *path2,
  * total cost, we just say that their costs are "different", since neither
  * dominates the other across the whole performance spectrum.
  *
- * If consider_startup is false, then we don't care about keeping paths with
- * good startup cost, so we'll never return COSTS_DIFFERENT.
- *
- * This function also includes special hacks to support a policy enforced
- * by its sole caller, add_path(): paths that have any parameterization
- * cannot win comparisons on the grounds of having cheaper startup cost,
- * since we deem only total cost to be of interest for a parameterized path.
- * (Unparameterized paths are more common, so we check for this case last.)
+ * This function also enforces a policy rule that paths for which the relevant
+ * one of parent->consider_startup and parent->consider_param_startup is false
+ * cannot survive comparisons solely on the grounds of good startup cost, so
+ * we never return COSTS_DIFFERENT when that is true for the total-cost loser.
+ * (But if total costs are fuzzily equal, we compare startup costs anyway,
+ * in hopes of eliminating one path or the other.)
  */
 static PathCostComparison
-compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor,
-						   bool consider_startup)
+compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
 {
+#define CONSIDER_PATH_STARTUP_COST(p)  \
+	((p)->param_info == NULL ? (p)->parent->consider_startup : (p)->parent->consider_param_startup)
+
 	/*
 	 * Check total cost first since it's more likely to be different; many
 	 * paths have zero startup cost.
@@ -158,9 +165,8 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor,
 	if (path1->total_cost > path2->total_cost * fuzz_factor)
 	{
 		/* path1 fuzzily worse on total cost */
-		if (consider_startup &&
-			path2->startup_cost > path1->startup_cost * fuzz_factor &&
-			path1->param_info == NULL)
+		if (CONSIDER_PATH_STARTUP_COST(path1) &&
+			path2->startup_cost > path1->startup_cost * fuzz_factor)
 		{
 			/* ... but path2 fuzzily worse on startup, so DIFFERENT */
 			return COSTS_DIFFERENT;
@@ -171,9 +177,8 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor,
 	if (path2->total_cost > path1->total_cost * fuzz_factor)
 	{
 		/* path2 fuzzily worse on total cost */
-		if (consider_startup &&
-			path1->startup_cost > path2->startup_cost * fuzz_factor &&
-			path2->param_info == NULL)
+		if (CONSIDER_PATH_STARTUP_COST(path2) &&
+			path1->startup_cost > path2->startup_cost * fuzz_factor)
 		{
 			/* ... but path1 fuzzily worse on startup, so DIFFERENT */
 			return COSTS_DIFFERENT;
@@ -181,22 +186,21 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor,
 		/* else path1 dominates */
 		return COSTS_BETTER1;
 	}
-	/* fuzzily the same on total cost */
-	/* (so we may as well compare startup cost, even if !consider_startup) */
-	if (path1->startup_cost > path2->startup_cost * fuzz_factor &&
-		path2->param_info == NULL)
+	/* fuzzily the same on total cost ... */
+	if (path1->startup_cost > path2->startup_cost * fuzz_factor)
 	{
 		/* ... but path1 fuzzily worse on startup, so path2 wins */
 		return COSTS_BETTER2;
 	}
-	if (path2->startup_cost > path1->startup_cost * fuzz_factor &&
-		path1->param_info == NULL)
+	if (path2->startup_cost > path1->startup_cost * fuzz_factor)
 	{
 		/* ... but path2 fuzzily worse on startup, so path1 wins */
 		return COSTS_BETTER1;
 	}
 	/* fuzzily the same on both costs */
 	return COSTS_EQUAL;
+
+#undef CONSIDER_PATH_STARTUP_COST
 }
 
 /*
@@ -212,11 +216,11 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor,
  *
  * The cheapest_parameterized_paths list collects all parameterized paths
  * that have survived the add_path() tournament for this relation.  (Since
- * add_path ignores pathkeys and startup cost for a parameterized path,
- * these will be paths that have best total cost or best row count for their
- * parameterization.)  cheapest_parameterized_paths always includes the
- * cheapest-total unparameterized path, too, if there is one; the users of
- * that list find it more convenient if that's included.
+ * add_path ignores pathkeys for a parameterized path, these will be paths
+ * that have best cost or best row count for their parameterization.)
+ * cheapest_parameterized_paths always includes the cheapest-total
+ * unparameterized path, too, if there is one; the users of that list find
+ * it more convenient if that's included.
  *
  * This is normally called only after we've finished constructing the path
  * list for the rel node.
@@ -361,14 +365,15 @@ set_cheapest(RelOptInfo *parent_rel)
  *	  cases do arise, so we make the full set of checks anyway.
  *
  *	  There are two policy decisions embedded in this function, along with
- *	  its sibling add_path_precheck: we treat all parameterized paths as
- *	  having NIL pathkeys, and we ignore their startup costs, so that they
- *	  compete only on parameterization, total cost and rowcount.  This is to
- *	  reduce the number of parameterized paths that are kept.  See discussion
- *	  in src/backend/optimizer/README.
+ *	  its sibling add_path_precheck.  First, we treat all parameterized paths
+ *	  as having NIL pathkeys, so that they cannot win comparisons on the
+ *	  basis of sort order.  This is to reduce the number of parameterized
+ *	  paths that are kept; see discussion in src/backend/optimizer/README.
  *
- *	  Another policy that is enforced here is that we only consider cheap
- *	  startup cost to be interesting if parent_rel->consider_startup is true.
+ *	  Second, we only consider cheap startup cost to be interesting if
+ *	  parent_rel->consider_startup is true for an unparameterized path, or
+ *	  parent_rel->consider_param_startup is true for a parameterized one.
+ *	  Again, this allows discarding useless paths sooner.
  *
  *	  The pathlist is kept sorted by total_cost, with cheaper paths
  *	  at the front.  Within this routine, that's simply a speed hack:
@@ -430,11 +435,10 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 		p1_next = lnext(p1);
 
 		/*
-		 * Do a fuzzy cost comparison with 1% fuzziness limit.  (XXX does this
-		 * percentage need to be user-configurable?)
+		 * Do a fuzzy cost comparison with standard fuzziness limit.
 		 */
-		costcmp = compare_path_costs_fuzzily(new_path, old_path, 1.01,
-											 parent_rel->consider_startup);
+		costcmp = compare_path_costs_fuzzily(new_path, old_path,
+											 STD_FUZZ_FACTOR);
 
 		/*
 		 * If the two paths compare differently for startup and total cost,
@@ -501,8 +505,7 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 									accept_new = false; /* old dominates new */
 								else if (compare_path_costs_fuzzily(new_path,
 																	old_path,
-																1.0000000001,
-																	parent_rel->consider_startup) == COSTS_BETTER1)
+											  1.0000000001) == COSTS_BETTER1)
 									remove_old = true;	/* new dominates old */
 								else
 									accept_new = false; /* old equals or
@@ -622,10 +625,14 @@ add_path_precheck(RelOptInfo *parent_rel,
 				  List *pathkeys, Relids required_outer)
 {
 	List	   *new_path_pathkeys;
+	bool		consider_startup;
 	ListCell   *p1;
 
 	/* Pretend parameterized paths have no pathkeys, per add_path policy */
 	new_path_pathkeys = required_outer ? NIL : pathkeys;
+
+	/* Decide whether new path's startup cost is interesting */
+	consider_startup = required_outer ? parent_rel->consider_param_startup : parent_rel->consider_startup;
 
 	foreach(p1, parent_rel->pathlist)
 	{
@@ -638,16 +645,15 @@ add_path_precheck(RelOptInfo *parent_rel,
 		 * pathkeys as well as both cost metrics.  If we find one, we can
 		 * reject the new path.
 		 *
-		 * For speed, we make exact rather than fuzzy cost comparisons. If an
-		 * old path dominates the new path exactly on both costs, it will
-		 * surely do so fuzzily.
+		 * Cost comparisons here should match compare_path_costs_fuzzily.
 		 */
-		if (total_cost >= old_path->total_cost)
+		if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR)
 		{
-			/* can win on startup cost only if unparameterized */
-			if (startup_cost >= old_path->startup_cost || required_outer)
+			/* new path can win on startup cost only if consider_startup */
+			if (startup_cost > old_path->startup_cost * STD_FUZZ_FACTOR ||
+				!consider_startup)
 			{
-				/* new path does not win on cost, so check pathkeys... */
+				/* new path loses on cost, so check pathkeys... */
 				List	   *old_path_pathkeys;
 
 				old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
@@ -701,6 +707,26 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
 
 	cost_seqscan(pathnode, root, rel, pathnode->param_info);
+
+	return pathnode;
+}
+
+/*
+ * create_samplescan_path
+ *	  Like seqscan but uses sampling function while scanning.
+ */
+Path *
+create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
+{
+	Path	   *pathnode = makeNode(Path);
+
+	pathnode->pathtype = T_SampleScan;
+	pathnode->parent = rel;
+	pathnode->param_info = get_baserel_parampathinfo(root, rel,
+													 required_outer);
+	pathnode->pathkeys = NIL;	/* samplescan has unordered result */
+
+	cost_samplescan(pathnode, root, rel);
 
 	return pathnode;
 }
@@ -1088,12 +1114,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	Path		sort_path;		/* dummy for result of cost_sort */
 	Path		agg_path;		/* dummy for result of cost_agg */
 	MemoryContext oldcontext;
-	List	   *in_operators;
-	List	   *uniq_exprs;
-	bool		all_btree;
-	bool		all_hash;
 	int			numCols;
-	ListCell   *lc;
 
 	/* Caller made a mistake if subpath isn't cheapest_total ... */
 	Assert(subpath == rel->cheapest_total_path);
@@ -1106,8 +1127,8 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	if (rel->cheapest_unique_path)
 		return (UniquePath *) rel->cheapest_unique_path;
 
-	/* If we previously failed, return NULL quickly */
-	if (sjinfo->join_quals == NIL)
+	/* If it's not possible to unique-ify, return NULL */
+	if (!(sjinfo->semi_can_btree || sjinfo->semi_can_hash))
 		return NULL;
 
 	/*
@@ -1116,150 +1137,6 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	 */
 	oldcontext = MemoryContextSwitchTo(root->planner_cxt);
 
-	/*----------
-	 * Look to see whether the semijoin's join quals consist of AND'ed
-	 * equality operators, with (only) RHS variables on only one side of
-	 * each one.  If so, we can figure out how to enforce uniqueness for
-	 * the RHS.
-	 *
-	 * Note that the input join_quals list is the list of quals that are
-	 * *syntactically* associated with the semijoin, which in practice means
-	 * the synthesized comparison list for an IN or the WHERE of an EXISTS.
-	 * Particularly in the latter case, it might contain clauses that aren't
-	 * *semantically* associated with the join, but refer to just one side or
-	 * the other.  We can ignore such clauses here, as they will just drop
-	 * down to be processed within one side or the other.  (It is okay to
-	 * consider only the syntactically-associated clauses here because for a
-	 * semijoin, no higher-level quals could refer to the RHS, and so there
-	 * can be no other quals that are semantically associated with this join.
-	 * We do things this way because it is useful to be able to run this test
-	 * before we have extracted the list of quals that are actually
-	 * semantically associated with the particular join.)
-	 *
-	 * Note that the in_operators list consists of the joinqual operators
-	 * themselves (but commuted if needed to put the RHS value on the right).
-	 * These could be cross-type operators, in which case the operator
-	 * actually needed for uniqueness is a related single-type operator.
-	 * We assume here that that operator will be available from the btree
-	 * or hash opclass when the time comes ... if not, create_unique_plan()
-	 * will fail.
-	 *----------
-	 */
-	in_operators = NIL;
-	uniq_exprs = NIL;
-	all_btree = true;
-	all_hash = enable_hashagg;	/* don't consider hash if not enabled */
-	foreach(lc, sjinfo->join_quals)
-	{
-		OpExpr	   *op = (OpExpr *) lfirst(lc);
-		Oid			opno;
-		Node	   *left_expr;
-		Node	   *right_expr;
-		Relids		left_varnos;
-		Relids		right_varnos;
-		Relids		all_varnos;
-		Oid			opinputtype;
-
-		/* Is it a binary opclause? */
-		if (!IsA(op, OpExpr) ||
-			list_length(op->args) != 2)
-		{
-			/* No, but does it reference both sides? */
-			all_varnos = pull_varnos((Node *) op);
-			if (!bms_overlap(all_varnos, sjinfo->syn_righthand) ||
-				bms_is_subset(all_varnos, sjinfo->syn_righthand))
-			{
-				/*
-				 * Clause refers to only one rel, so ignore it --- unless it
-				 * contains volatile functions, in which case we'd better
-				 * punt.
-				 */
-				if (contain_volatile_functions((Node *) op))
-					goto no_unique_path;
-				continue;
-			}
-			/* Non-operator clause referencing both sides, must punt */
-			goto no_unique_path;
-		}
-
-		/* Extract data from binary opclause */
-		opno = op->opno;
-		left_expr = linitial(op->args);
-		right_expr = lsecond(op->args);
-		left_varnos = pull_varnos(left_expr);
-		right_varnos = pull_varnos(right_expr);
-		all_varnos = bms_union(left_varnos, right_varnos);
-		opinputtype = exprType(left_expr);
-
-		/* Does it reference both sides? */
-		if (!bms_overlap(all_varnos, sjinfo->syn_righthand) ||
-			bms_is_subset(all_varnos, sjinfo->syn_righthand))
-		{
-			/*
-			 * Clause refers to only one rel, so ignore it --- unless it
-			 * contains volatile functions, in which case we'd better punt.
-			 */
-			if (contain_volatile_functions((Node *) op))
-				goto no_unique_path;
-			continue;
-		}
-
-		/* check rel membership of arguments */
-		if (!bms_is_empty(right_varnos) &&
-			bms_is_subset(right_varnos, sjinfo->syn_righthand) &&
-			!bms_overlap(left_varnos, sjinfo->syn_righthand))
-		{
-			/* typical case, right_expr is RHS variable */
-		}
-		else if (!bms_is_empty(left_varnos) &&
-				 bms_is_subset(left_varnos, sjinfo->syn_righthand) &&
-				 !bms_overlap(right_varnos, sjinfo->syn_righthand))
-		{
-			/* flipped case, left_expr is RHS variable */
-			opno = get_commutator(opno);
-			if (!OidIsValid(opno))
-				goto no_unique_path;
-			right_expr = left_expr;
-		}
-		else
-			goto no_unique_path;
-
-		/* all operators must be btree equality or hash equality */
-		if (all_btree)
-		{
-			/* oprcanmerge is considered a hint... */
-			if (!op_mergejoinable(opno, opinputtype) ||
-				get_mergejoin_opfamilies(opno) == NIL)
-				all_btree = false;
-		}
-		if (all_hash)
-		{
-			/* ... but oprcanhash had better be correct */
-			if (!op_hashjoinable(opno, opinputtype))
-				all_hash = false;
-		}
-		if (!(all_btree || all_hash))
-			goto no_unique_path;
-
-		/* so far so good, keep building lists */
-		in_operators = lappend_oid(in_operators, opno);
-		uniq_exprs = lappend(uniq_exprs, copyObject(right_expr));
-	}
-
-	/* Punt if we didn't find at least one column to unique-ify */
-	if (uniq_exprs == NIL)
-		goto no_unique_path;
-
-	/*
-	 * The expressions we'd need to unique-ify mustn't be volatile.
-	 */
-	if (contain_volatile_functions((Node *) uniq_exprs))
-		goto no_unique_path;
-
-	/*
-	 * If we get here, we can unique-ify using at least one of sorting and
-	 * hashing.  Start building the result Path object.
-	 */
 	pathnode = makeNode(UniquePath);
 
 	pathnode->path.pathtype = T_Unique;
@@ -1273,18 +1150,19 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	pathnode->path.pathkeys = NIL;
 
 	pathnode->subpath = subpath;
-	pathnode->in_operators = in_operators;
-	pathnode->uniq_exprs = uniq_exprs;
+	pathnode->in_operators = sjinfo->semi_operators;
+	pathnode->uniq_exprs = sjinfo->semi_rhs_exprs;
 
 	/*
 	 * If the input is a relation and it has a unique index that proves the
-	 * uniq_exprs are unique, then we don't need to do anything.  Note that
-	 * relation_has_unique_index_for automatically considers restriction
+	 * semi_rhs_exprs are unique, then we don't need to do anything.  Note
+	 * that relation_has_unique_index_for automatically considers restriction
 	 * clauses for the rel, as well.
 	 */
-	if (rel->rtekind == RTE_RELATION && all_btree &&
+	if (rel->rtekind == RTE_RELATION && sjinfo->semi_can_btree &&
 		relation_has_unique_index_for(root, rel, NIL,
-									  uniq_exprs, in_operators))
+									  sjinfo->semi_rhs_exprs,
+									  sjinfo->semi_operators))
 	{
 		pathnode->umethod = UNIQUE_PATH_NOOP;
 		pathnode->path.rows = rel->rows;
@@ -1304,7 +1182,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	 * don't need to do anything.  The test for uniqueness has to consider
 	 * exactly which columns we are extracting; for example "SELECT DISTINCT
 	 * x,y" doesn't guarantee that x alone is distinct. So we cannot check for
-	 * this optimization unless uniq_exprs consists only of simple Vars
+	 * this optimization unless semi_rhs_exprs consists only of simple Vars
 	 * referencing subquery outputs.  (Possibly we could do something with
 	 * expressions in the subquery outputs, too, but for now keep it simple.)
 	 */
@@ -1316,11 +1194,13 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		{
 			List	   *sub_tlist_colnos;
 
-			sub_tlist_colnos = translate_sub_tlist(uniq_exprs, rel->relid);
+			sub_tlist_colnos = translate_sub_tlist(sjinfo->semi_rhs_exprs,
+												   rel->relid);
 
 			if (sub_tlist_colnos &&
 				query_is_distinct_for(rte->subquery,
-									  sub_tlist_colnos, in_operators))
+									  sub_tlist_colnos,
+									  sjinfo->semi_operators))
 			{
 				pathnode->umethod = UNIQUE_PATH_NOOP;
 				pathnode->path.rows = rel->rows;
@@ -1338,10 +1218,13 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	}
 
 	/* Estimate number of output rows */
-	pathnode->path.rows = estimate_num_groups(root, uniq_exprs, rel->rows);
-	numCols = list_length(uniq_exprs);
+	pathnode->path.rows = estimate_num_groups(root,
+											  sjinfo->semi_rhs_exprs,
+											  rel->rows,
+											  NULL);
+	numCols = list_length(sjinfo->semi_rhs_exprs);
 
-	if (all_btree)
+	if (sjinfo->semi_can_btree)
 	{
 		/*
 		 * Estimate cost for sort+unique implementation
@@ -1363,7 +1246,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		sort_path.total_cost += cpu_operator_cost * rel->rows * numCols;
 	}
 
-	if (all_hash)
+	if (sjinfo->semi_can_hash)
 	{
 		/*
 		 * Estimate the overhead per hashtable entry at 64 bytes (same as in
@@ -1372,7 +1255,13 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		int			hashentrysize = rel->width + 64;
 
 		if (hashentrysize * pathnode->path.rows > work_mem * 1024L)
-			all_hash = false;	/* don't try to hash */
+		{
+			/*
+			 * We should not try to hash.  Hack the SpecialJoinInfo to
+			 * remember this, in case we come through here again.
+			 */
+			sjinfo->semi_can_hash = false;
+		}
 		else
 			cost_agg(&agg_path, root,
 					 AGG_HASHED, NULL,
@@ -1382,19 +1271,23 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 					 rel->rows);
 	}
 
-	if (all_btree && all_hash)
+	if (sjinfo->semi_can_btree && sjinfo->semi_can_hash)
 	{
 		if (agg_path.total_cost < sort_path.total_cost)
 			pathnode->umethod = UNIQUE_PATH_HASH;
 		else
 			pathnode->umethod = UNIQUE_PATH_SORT;
 	}
-	else if (all_btree)
+	else if (sjinfo->semi_can_btree)
 		pathnode->umethod = UNIQUE_PATH_SORT;
-	else if (all_hash)
+	else if (sjinfo->semi_can_hash)
 		pathnode->umethod = UNIQUE_PATH_HASH;
 	else
-		goto no_unique_path;
+	{
+		/* we can get here only if we abandoned hashing above */
+		MemoryContextSwitchTo(oldcontext);
+		return NULL;
+	}
 
 	if (pathnode->umethod == UNIQUE_PATH_HASH)
 	{
@@ -1412,15 +1305,6 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	MemoryContextSwitchTo(oldcontext);
 
 	return pathnode;
-
-no_unique_path:			/* failure exit */
-
-	/* Mark the SpecialJoinInfo as not unique-able */
-	sjinfo->join_quals = NIL;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	return NULL;
 }
 
 /*
@@ -1921,6 +1805,8 @@ reparameterize_path(PlannerInfo *root, Path *path,
 		case T_SubqueryScan:
 			return create_subqueryscan_path(root, rel, path->pathkeys,
 											required_outer);
+		case T_SampleScan:
+			return (Path *) create_samplescan_path(root, rel, required_outer);
 		default:
 			break;
 	}

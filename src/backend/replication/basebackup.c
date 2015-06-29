@@ -3,7 +3,7 @@
  * basebackup.c
  *	  code for taking a base backup and streaming it to a standby
  *
- * Portions Copyright (c) 2010-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/basebackup.c
@@ -46,11 +46,12 @@ typedef struct
 	bool		nowait;
 	bool		includewal;
 	uint32		maxrate;
+	bool		sendtblspcmapfile;
 } basebackup_options;
 
 
-static int64 sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces);
-static int64 sendTablespace(char *path, bool sizeonly);
+static int64 sendDir(char *path, int basepathlen, bool sizeonly,
+		List *tablespaces, bool sendtblspclinks);
 static bool sendFile(char *readfilename, char *tarfilename,
 		 struct stat * statbuf, bool missing_ok);
 static void sendFileWithContent(const char *filename, const char *content);
@@ -84,7 +85,7 @@ static char *statrelpath = NULL;
 /* The actual number of bytes, transfer of which may cause sleep. */
 static uint64 throttling_sample;
 
-/* Amount of data already transfered but not yet throttled.  */
+/* Amount of data already transferred but not yet throttled.  */
 static int64 throttling_counter;
 
 /* The minimum time required to transfer throttling_sample bytes. */
@@ -92,15 +93,6 @@ static int64 elapsed_min_unit;
 
 /* The last check of the transfer rate. */
 static int64 throttled_last;
-
-typedef struct
-{
-	char	   *oid;
-	char	   *path;
-	char	   *rpath;			/* relative path within PGDATA, or NULL */
-	int64		size;
-} tablespaceinfo;
-
 
 /*
  * Called when ERROR or FATAL happens in perform_base_backup() after
@@ -126,33 +118,36 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 	XLogRecPtr	endptr;
 	TimeLineID	endtli;
 	char	   *labelfile;
+	char	   *tblspc_map_file = NULL;
 	int			datadirpathlen;
+	List	   *tablespaces = NIL;
 
 	datadirpathlen = strlen(DataDir);
 
 	backup_started_in_recovery = RecoveryInProgress();
 
 	startptr = do_pg_start_backup(opt->label, opt->fastcheckpoint, &starttli,
-								  &labelfile);
+								  &labelfile, tblspcdir, &tablespaces,
+								  &tblspc_map_file,
+								  opt->progress, opt->sendtblspcmapfile);
+
 	/*
 	 * Once do_pg_start_backup has been called, ensure that any failure causes
-	 * us to abort the backup so we don't "leak" a backup counter. For this reason,
-	 * *all* functionality between do_pg_start_backup() and do_pg_stop_backup()
-	 * should be inside the error cleanup block!
+	 * us to abort the backup so we don't "leak" a backup counter. For this
+	 * reason, *all* functionality between do_pg_start_backup() and
+	 * do_pg_stop_backup() should be inside the error cleanup block!
 	 */
 
 	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
 	{
-		List	   *tablespaces = NIL;
 		ListCell   *lc;
-		struct dirent *de;
 		tablespaceinfo *ti;
 
 		SendXlogRecPtrResult(startptr, starttli);
 
 		/*
-		 * Calculate the relative path of temporary statistics directory in order
-		 * to skip the files which are located in that directory later.
+		 * Calculate the relative path of temporary statistics directory in
+		 * order to skip the files which are located in that directory later.
 		 */
 		if (is_absolute_path(pgstat_stat_directory) &&
 			strncmp(pgstat_stat_directory, DataDir, datadirpathlen) == 0)
@@ -162,70 +157,9 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 		else
 			statrelpath = pgstat_stat_directory;
 
-		/* Collect information about all tablespaces */
-		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
-		{
-			char		fullpath[MAXPGPATH];
-			char		linkpath[MAXPGPATH];
-			char	   *relpath = NULL;
-			int			rllen;
-
-			/* Skip special stuff */
-			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-				continue;
-
-			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
-
-#if defined(HAVE_READLINK) || defined(WIN32)
-			rllen = readlink(fullpath, linkpath, sizeof(linkpath));
-			if (rllen < 0)
-			{
-				ereport(WARNING,
-						(errmsg("could not read symbolic link \"%s\": %m",
-								fullpath)));
-				continue;
-			}
-			else if (rllen >= sizeof(linkpath))
-			{
-				ereport(WARNING,
-						(errmsg("symbolic link \"%s\" target is too long",
-								fullpath)));
-				continue;
-			}
-			linkpath[rllen] = '\0';
-
-			/*
-			 * Relpath holds the relative path of the tablespace directory
-			 * when it's located within PGDATA, or NULL if it's located
-			 * elsewhere.
-			 */
-			if (rllen > datadirpathlen &&
-				strncmp(linkpath, DataDir, datadirpathlen) == 0 &&
-				IS_DIR_SEP(linkpath[datadirpathlen]))
-				relpath = linkpath + datadirpathlen + 1;
-
-			ti = palloc(sizeof(tablespaceinfo));
-			ti->oid = pstrdup(de->d_name);
-			ti->path = pstrdup(linkpath);
-			ti->rpath = relpath ? pstrdup(relpath) : NULL;
-			ti->size = opt->progress ? sendTablespace(fullpath, true) : -1;
-			tablespaces = lappend(tablespaces, ti);
-#else
-
-			/*
-			 * If the platform does not have symbolic links, it should not be
-			 * possible to have tablespaces - clearly somebody else created
-			 * them. Warn about it and ignore.
-			 */
-			ereport(WARNING,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				  errmsg("tablespaces are not supported on this platform")));
-#endif
-		}
-
 		/* Add a node for the base directory at the end */
 		ti = palloc0(sizeof(tablespaceinfo));
-		ti->size = opt->progress ? sendDir(".", 1, true, tablespaces) : -1;
+		ti->size = opt->progress ? sendDir(".", 1, true, tablespaces, true) : -1;
 		tablespaces = lappend(tablespaces, ti);
 
 		/* Send tablespace header */
@@ -239,7 +173,7 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 
 			/*
 			 * The minimum amount of time for throttling_sample bytes to be
-			 * transfered.
+			 * transferred.
 			 */
 			elapsed_min_unit = USECS_PER_SEC / THROTTLING_FREQUENCY;
 
@@ -274,8 +208,17 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 				/* In the main tar, include the backup_label first... */
 				sendFileWithContent(BACKUP_LABEL_FILE, labelfile);
 
-				/* ... then the bulk of the files ... */
-				sendDir(".", 1, false, tablespaces);
+				/*
+				 * Send tablespace_map file if required and then the bulk of
+				 * the files.
+				 */
+				if (tblspc_map_file && opt->sendtblspcmapfile)
+				{
+					sendFileWithContent(TABLESPACE_MAP, tblspc_map_file);
+					sendDir(".", 1, false, tablespaces, false);
+				}
+				else
+					sendDir(".", 1, false, tablespaces, true);
 
 				/* ... and pg_control after everything else. */
 				if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
@@ -350,17 +293,14 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 		while ((de = ReadDir(dir, "pg_xlog")) != NULL)
 		{
 			/* Does it look like a WAL segment, and is it in the range? */
-			if (strlen(de->d_name) == 24 &&
-				strspn(de->d_name, "0123456789ABCDEF") == 24 &&
+			if (IsXLogFileName(de->d_name) &&
 				strcmp(de->d_name + 8, firstoff + 8) >= 0 &&
 				strcmp(de->d_name + 8, lastoff + 8) <= 0)
 			{
 				walFileList = lappend(walFileList, pstrdup(de->d_name));
 			}
 			/* Does it look like a timeline history file? */
-			else if (strlen(de->d_name) == 8 + strlen(".history") &&
-					 strspn(de->d_name, "0123456789ABCDEF") == 8 &&
-					 strcmp(de->d_name + 8, ".history") == 0)
+			else if (IsTLHistoryFileName(de->d_name))
 			{
 				historyFileList = lappend(historyFileList, pstrdup(de->d_name));
 			}
@@ -471,6 +411,7 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 					errmsg("unexpected WAL file size \"%s\"", walFiles[i])));
 			}
 
+			/* send the WAL file itself */
 			_tarWriteHeader(pathbuf, NULL, &statbuf);
 
 			while ((cnt = fread(buf, 1, Min(sizeof(buf), XLogSegSize - len), fp)) > 0)
@@ -497,7 +438,17 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 			}
 
 			/* XLogSegSize is a multiple of 512, so no need for padding */
+
 			FreeFile(fp);
+
+			/*
+			 * Mark file as archived, otherwise files can get archived again
+			 * after promotion of a new node. This is in line with
+			 * walreceiver.c always doing an XLogArchiveForceDone() after a
+			 * complete segment.
+			 */
+			StatusFilePath(pathbuf, walFiles[i], ".done");
+			sendFileWithContent(pathbuf, "");
 		}
 
 		/*
@@ -521,6 +472,10 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 						 errmsg("could not stat file \"%s\": %m", pathbuf)));
 
 			sendFile(pathbuf, pathbuf, &statbuf, false);
+
+			/* unconditionally mark file as archived */
+			StatusFilePath(pathbuf, fname, ".done");
+			sendFileWithContent(pathbuf, "");
 		}
 
 		/* Send CopyDone message for the last tar file */
@@ -555,6 +510,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	bool		o_nowait = false;
 	bool		o_wal = false;
 	bool		o_maxrate = false;
+	bool		o_tablespace_map = false;
 
 	MemSet(opt, 0, sizeof(*opt));
 	foreach(lopt, options)
@@ -624,6 +580,15 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 
 			opt->maxrate = (uint32) maxrate;
 			o_maxrate = true;
+		}
+		else if (strcmp(defel->defname, "tablespace_map") == 0)
+		{
+			if (o_tablespace_map)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("duplicate option \"%s\"", defel->defname)));
+			opt->sendtblspcmapfile = true;
+			o_tablespace_map = true;
 		}
 		else
 			elog(ERROR, "option \"%s\" not recognized",
@@ -853,7 +818,7 @@ sendFileWithContent(const char *filename, const char *content)
  *
  * Only used to send auxiliary tablespaces, not PGDATA.
  */
-static int64
+int64
 sendTablespace(char *path, bool sizeonly)
 {
 	int64		size;
@@ -887,7 +852,7 @@ sendTablespace(char *path, bool sizeonly)
 	size = 512;					/* Size of the header just added */
 
 	/* Send all the files in the tablespace version directory */
-	size += sendDir(pathbuf, strlen(path), sizeonly, NIL);
+	size += sendDir(pathbuf, strlen(path), sizeonly, NIL, true);
 
 	return size;
 }
@@ -899,9 +864,14 @@ sendTablespace(char *path, bool sizeonly)
  *
  * Omit any directory in the tablespaces list, to avoid backing up
  * tablespaces twice when they were created inside PGDATA.
+ *
+ * If sendtblspclinks is true, we need to include symlink
+ * information in the tar file. If not, we can skip that
+ * as it will be sent separately in the tablespace_map file.
  */
 static int64
-sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces)
+sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces,
+		bool sendtblspclinks)
 {
 	DIR		   *dir;
 	struct dirent *de;
@@ -929,11 +899,15 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces)
 			continue;
 
 		/*
-		 * If there's a backup_label file, it belongs to a backup started by
-		 * the user with pg_start_backup(). It is *not* correct for this
-		 * backup, our backup_label is injected into the tar separately.
+		 * If there's a backup_label or tablespace_map file, it belongs to a
+		 * backup started by the user with pg_start_backup(). It is *not*
+		 * correct for this backup, our backup_label/tablespace_map is
+		 * injected into the tar separately.
 		 */
 		if (strcmp(de->d_name, BACKUP_LABEL_FILE) == 0)
+			continue;
+
+		if (strcmp(de->d_name, TABLESPACE_MAP) == 0)
 			continue;
 
 		/*
@@ -1021,6 +995,15 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces)
 				_tarWriteHeader(pathbuf + basepathlen + 1, NULL, &statbuf);
 			}
 			size += 512;		/* Size of the header just added */
+
+			/*
+			 * Also send archive_status directory (by hackishly reusing
+			 * statbuf from above ...).
+			 */
+			if (!sizeonly)
+				_tarWriteHeader("./pg_xlog/archive_status", NULL, &statbuf);
+			size += 512;		/* Size of the header just added */
+
 			continue;			/* don't recurse into pg_xlog */
 		}
 
@@ -1045,7 +1028,8 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces)
 								pathbuf)));
 			if (rllen >= sizeof(linkpath))
 				ereport(ERROR,
-						(errmsg("symbolic link \"%s\" target is too long",
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("symbolic link \"%s\" target is too long",
 								pathbuf)));
 			linkpath[rllen] = '\0';
 
@@ -1099,8 +1083,15 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces)
 					break;
 				}
 			}
+
+			/*
+			 * skip sending directories inside pg_tblspc, if not required.
+			 */
+			if (strcmp(pathbuf, "./pg_tblspc") == 0 && !sendtblspclinks)
+				skip_this_dir = true;
+
 			if (!skip_this_dir)
-				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces);
+				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces, sendtblspclinks);
 		}
 		else if (S_ISREG(statbuf.st_mode))
 		{
@@ -1234,10 +1225,29 @@ _tarWriteHeader(const char *filename, const char *linktarget,
 				struct stat * statbuf)
 {
 	char		h[512];
+	enum tarError rc;
 
-	tarCreateHeader(h, filename, linktarget, statbuf->st_size,
-					statbuf->st_mode, statbuf->st_uid, statbuf->st_gid,
-					statbuf->st_mtime);
+	rc = tarCreateHeader(h, filename, linktarget, statbuf->st_size,
+						 statbuf->st_mode, statbuf->st_uid, statbuf->st_gid,
+						 statbuf->st_mtime);
+
+	switch (rc)
+	{
+		case TAR_OK:
+			break;
+		case TAR_NAME_TOO_LONG:
+			ereport(ERROR,
+					(errmsg("file name too long for tar format: \"%s\"",
+							filename)));
+			break;
+		case TAR_SYMLINK_TOO_LONG:
+			ereport(ERROR,
+					(errmsg("symbolic link target too long for tar format: file name \"%s\", target \"%s\"",
+							filename, linktarget)));
+			break;
+		default:
+			elog(ERROR, "unrecognized tar error: %d", rc);
+	}
 
 	pq_putmessage('d', h, 512);
 }
@@ -1270,15 +1280,21 @@ throttle(size_t increment)
 	/* Only sleep if the transfer is faster than it should be. */
 	if (sleep > 0)
 	{
-		ResetLatch(&MyWalSnd->latch);
+		ResetLatch(MyLatch);
+
+		/* We're eating a potentially set latch, so check for interrupts */
+		CHECK_FOR_INTERRUPTS();
 
 		/*
 		 * (TAR_SEND_SIZE / throttling_sample * elapsed_min_unit) should be
 		 * the maximum time to sleep. Thus the cast to long is safe.
 		 */
-		wait_result = WaitLatch(&MyWalSnd->latch,
+		wait_result = WaitLatch(MyLatch,
 							 WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 								(long) (sleep / 1000));
+
+		if (wait_result & WL_LATCH_SET)
+			CHECK_FOR_INTERRUPTS();
 	}
 	else
 	{

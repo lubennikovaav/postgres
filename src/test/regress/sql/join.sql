@@ -397,6 +397,10 @@ insert into t2a values (200, 2001);
 
 select * from t1 left join t2 on (t1.a = t2.a);
 
+-- Test matching of column name with wrong alias
+
+select t1.x from t1 join t3 on (t1.a = t3.x);
+
 --
 -- regression test for 8.1 merge right join bug
 --
@@ -442,6 +446,23 @@ LEFT JOIN (
         WHERE c.f1 IS NULL
 ) AS d ON (a.f1 = d.f1)
 WHERE d.f1 IS NULL;
+
+--
+-- regression test for proper handling of outer joins within antijoins
+--
+
+create temp table tt4x(c1 int, c2 int, c3 int);
+
+explain (costs off)
+select * from tt4x t1
+where not exists (
+  select 1 from tt4x t2
+    left join tt4x t3 on t2.c3 = t3.c1
+    left join ( select t5.c1 as c1
+                from tt4x t4 left join tt4x t5 on t4.c2 = t5.c1
+              ) a1 on t3.c2 = a1.c1
+  where t1.c1 = t2.c2
+);
 
 --
 -- regression test for problems of the sort depicted in bug #3494
@@ -764,6 +785,15 @@ select * from
 where thousand = (q1 + q2);
 
 --
+-- test ability to generate a suitable plan for a star-schema query
+--
+
+explain (costs off)
+select * from
+  tenk1, int8_tbl a, int8_tbl b
+where thousand = a.q1 and tenthous = b.q1 and a.q2 = 1 and b.q2 = 2;
+
+--
 -- test extraction of restriction OR clauses from join OR clause
 -- (we used to only do this for indexable clauses)
 --
@@ -774,6 +804,10 @@ select * from tenk1 a join tenk1 b on
 explain (costs off)
 select * from tenk1 a join tenk1 b on
   (a.unique1 = 1 and b.unique1 = 2) or (a.unique2 = 3 and b.ten = 4);
+explain (costs off)
+select * from tenk1 a join tenk1 b on
+  (a.unique1 = 1 and b.unique1 = 2) or
+  ((a.unique2 = 3 or a.unique2 = 7) and b.hundred = 4);
 
 --
 -- test placement of movable quals in a parameterized join tree
@@ -863,11 +897,11 @@ select f1, unique2, case when unique2 is null then f1 else 0 end
 explain (costs off)
 select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
   from tenk1 a left join tenk1 b on b.thousand = a.unique1                        left join tenk1 c on c.unique2 = coalesce(b.twothousand, a.twothousand)
-  where a.unique2 = 5530 and coalesce(b.twothousand, a.twothousand) = 44;
+  where a.unique2 < 10 and coalesce(b.twothousand, a.twothousand) = 44;
 
 select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
   from tenk1 a left join tenk1 b on b.thousand = a.unique1                        left join tenk1 c on c.unique2 = coalesce(b.twothousand, a.twothousand)
-  where a.unique2 = 5530 and coalesce(b.twothousand, a.twothousand) = 44;
+  where a.unique2 < 10 and coalesce(b.twothousand, a.twothousand) = 44;
 
 --
 -- check handling of join aliases when flattening multiple levels of subquery
@@ -909,6 +943,26 @@ explain (costs off)
 
 explain (costs off)
   select * from tenk1 a full join tenk1 b using(unique2) where unique2 = 42;
+
+--
+-- test that quals attached to an outer join have correct semantics,
+-- specifically that they don't re-use expressions computed below the join;
+-- we force a mergejoin so that coalesce(b.q1, 1) appears as a join input
+--
+
+set enable_hashjoin to off;
+set enable_nestloop to off;
+
+explain (verbose, costs off)
+  select a.q2, b.q1
+    from int8_tbl a left join int8_tbl b on a.q2 = coalesce(b.q1, 1)
+    where coalesce(b.q1, 1) > 0;
+select a.q2, b.q1
+  from int8_tbl a left join int8_tbl b on a.q2 = coalesce(b.q1, 1)
+  where coalesce(b.q1, 1) > 0;
+
+reset enable_hashjoin;
+reset enable_nestloop;
 
 --
 -- test join removal
@@ -1047,6 +1101,26 @@ select * from
   int8_tbl x join (int4_tbl x cross join int4_tbl y(ff)) j on q1 = f1; -- ok
 
 --
+-- Test hints given on incorrect column references are useful
+--
+
+select t1.uunique1 from
+  tenk1 t1 join tenk2 t2 on t1.two = t2.two; -- error, prefer "t1" suggestipn
+select t2.uunique1 from
+  tenk1 t1 join tenk2 t2 on t1.two = t2.two; -- error, prefer "t2" suggestion
+select uunique1 from
+  tenk1 t1 join tenk2 t2 on t1.two = t2.two; -- error, suggest both at once
+
+--
+-- Take care to reference the correct RTE
+--
+
+select atts.relid::regclass, s.* from pg_stats s join
+    pg_attribute a on s.attname = a.attname and s.tablename =
+    a.attrelid::regclass::text join (select unnest(indkey) attnum,
+    indexrelid from pg_index i) atts on atts.attnum = a.attnum where
+    schemaname != 'pg_catalog';
+--
 -- Test LATERAL
 --
 
@@ -1099,6 +1173,13 @@ explain (costs off)
     tenk1 b join lateral (values(a.unique1)) ss(x) on b.unique2 = ss.x;
 select count(*) from tenk1 a,
   tenk1 b join lateral (values(a.unique1)) ss(x) on b.unique2 = ss.x;
+
+-- lateral with VALUES, no flattening possible
+explain (costs off)
+  select count(*) from tenk1 a,
+    tenk1 b join lateral (values(a.unique1),(-1)) ss(x) on b.unique2 = ss.x;
+select count(*) from tenk1 a,
+  tenk1 b join lateral (values(a.unique1),(-1)) ss(x) on b.unique2 = ss.x;
 
 -- lateral injecting a strange outer join condition
 explain (costs off)
@@ -1210,7 +1291,7 @@ select * from
     cross join
     lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
   ) on c.q2 = ss2.q1,
-  lateral (select ss2.y) ss3;
+  lateral (select ss2.y offset 0) ss3;
 
 -- case that breaks the old ph_may_need optimization
 explain (verbose, costs off)
@@ -1228,9 +1309,9 @@ select c.*,a.*,ss1.q1,ss2.q1,ss3.* from
 -- check processing of postponed quals (bug #9041)
 explain (verbose, costs off)
 select * from
-  (select 1 as x) x cross join (select 2 as y) y
+  (select 1 as x offset 0) x cross join (select 2 as y offset 0) y
   left join lateral (
-    select * from (select 3 as z) z where z.z = x.x
+    select * from (select 3 as z offset 0) z where z.z = x.x
   ) zz on zz.z = y.y;
 
 -- test some error cases where LATERAL should have been used but wasn't

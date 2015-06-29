@@ -9,7 +9,7 @@
  * proper FooMain() routine for the incarnation.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -30,6 +30,7 @@
 #include "common/username.h"
 #include "postmaster/postmaster.h"
 #include "storage/barrier.h"
+#include "storage/s_lock.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
@@ -42,6 +43,7 @@ const char *progname;
 
 
 static void startup_hacks(const char *progname);
+static void init_locale(const char *categoryname, int category, const char *locale);
 static void help(const char *progname);
 static void check_root(const char *progname);
 
@@ -114,31 +116,31 @@ main(int argc, char *argv[])
 		char	   *env_locale;
 
 		if ((env_locale = getenv("LC_COLLATE")) != NULL)
-			pg_perm_setlocale(LC_COLLATE, env_locale);
+			init_locale("LC_COLLATE", LC_COLLATE, env_locale);
 		else
-			pg_perm_setlocale(LC_COLLATE, "");
+			init_locale("LC_COLLATE", LC_COLLATE, "");
 
 		if ((env_locale = getenv("LC_CTYPE")) != NULL)
-			pg_perm_setlocale(LC_CTYPE, env_locale);
+			init_locale("LC_CTYPE", LC_CTYPE, env_locale);
 		else
-			pg_perm_setlocale(LC_CTYPE, "");
+			init_locale("LC_CTYPE", LC_CTYPE, "");
 	}
 #else
-	pg_perm_setlocale(LC_COLLATE, "");
-	pg_perm_setlocale(LC_CTYPE, "");
+	init_locale("LC_COLLATE", LC_COLLATE, "");
+	init_locale("LC_CTYPE", LC_CTYPE, "");
 #endif
 
 #ifdef LC_MESSAGES
-	pg_perm_setlocale(LC_MESSAGES, "");
+	init_locale("LC_MESSAGES", LC_MESSAGES, "");
 #endif
 
 	/*
 	 * We keep these set to "C" always, except transiently in pg_locale.c; see
 	 * that file for explanations.
 	 */
-	pg_perm_setlocale(LC_MONETARY, "C");
-	pg_perm_setlocale(LC_NUMERIC, "C");
-	pg_perm_setlocale(LC_TIME, "C");
+	init_locale("LC_MONETARY", LC_MONETARY, "C");
+	init_locale("LC_NUMERIC", LC_NUMERIC, "C");
+	init_locale("LC_TIME", LC_TIME, "C");
 
 	/*
 	 * Now that we have absorbed as much as we wish to from the locale
@@ -271,6 +273,24 @@ startup_hacks(const char *progname)
 
 
 /*
+ * Make the initial permanent setting for a locale category.  If that fails,
+ * perhaps due to LC_foo=invalid in the environment, use locale C.  If even
+ * that fails, perhaps due to out-of-memory, the entire startup fails with it.
+ * When this returns, we are guaranteed to have a setting for the given
+ * category's environment variable.
+ */
+static void
+init_locale(const char *categoryname, int category, const char *locale)
+{
+	if (pg_perm_setlocale(category, locale) == NULL &&
+		pg_perm_setlocale(category, "C") == NULL)
+		elog(FATAL, "could not adopt \"%s\" locale nor C locale for %s",
+			 locale, categoryname);
+}
+
+
+
+/*
  * Help display should match the options accepted by PostmasterMain()
  * and PostgresMain().
  *
@@ -284,9 +304,6 @@ help(const char *progname)
 	printf(_("%s is the PostgreSQL server.\n\n"), progname);
 	printf(_("Usage:\n  %s [OPTION]...\n\n"), progname);
 	printf(_("Options:\n"));
-#ifdef USE_ASSERT_CHECKING
-	printf(_("  -A 1|0             enable/disable run-time assert checking\n"));
-#endif
 	printf(_("  -B NBUFFERS        number of shared buffers\n"));
 	printf(_("  -c NAME=VALUE      set run-time parameter\n"));
 	printf(_("  -C NAME            print value of run-time parameter, then exit\n"));

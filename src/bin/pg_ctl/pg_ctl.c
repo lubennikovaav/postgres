@@ -2,7 +2,7 @@
  *
  * pg_ctl --- start/stops/restarts the PostgreSQL server
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  *
  * src/bin/pg_ctl/pg_ctl.c
  *
@@ -79,8 +79,8 @@ static bool do_wait = false;
 static bool wait_set = false;
 static int	wait_seconds = DEFAULT_WAIT;
 static bool silent_mode = false;
-static ShutdownMode shutdown_mode = SMART_MODE;
-static int	sig = SIGTERM;		/* default */
+static ShutdownMode shutdown_mode = FAST_MODE;
+static int	sig = SIGINT;		/* default */
 static CtlCommand ctl_command = NO_COMMAND;
 static char *pg_data = NULL;
 static char *pg_config = NULL;
@@ -116,11 +116,7 @@ static pid_t postmasterPID = -1;
 #endif
 
 
-static void
-write_stderr(const char *fmt,...)
-/* This extension allows gcc to check the format string for consistency with
-   the supplied arguments. */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 1, 2)));
+static void write_stderr(const char *fmt,...) pg_attribute_printf(1, 2);
 static void do_advice(void);
 static void do_help(void);
 static void set_mode(char *modeopt);
@@ -180,7 +176,7 @@ write_eventlog(int level, const char *line)
 	if (evtHandle == INVALID_HANDLE_VALUE)
 	{
 		evtHandle = RegisterEventSource(NULL,
-						event_source ? event_source : DEFAULT_EVENT_SOURCE);
+						 event_source ? event_source : DEFAULT_EVENT_SOURCE);
 		if (evtHandle == NULL)
 		{
 			evtHandle = INVALID_HANDLE_VALUE;
@@ -267,7 +263,8 @@ get_pgpid(bool is_status_request)
 		/*
 		 * The Linux Standard Base Core Specification 3.1 says this should
 		 * return '4, program or service status is unknown'
-		 * https://refspecs.linuxbase.org/LSB_3.1.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
+		 * https://refspecs.linuxbase.org/LSB_3.1.0/LSB-Core-generic/LSB-Core-g
+		 * eneric/iniscrptact.html
 		 */
 		exit(is_status_request ? 4 : 1);
 	}
@@ -1456,7 +1453,9 @@ pgwin32_doRegister(void)
 	   NULL, NULL, "RPCSS\0", register_username, register_password)) == NULL)
 	{
 		CloseServiceHandle(hSCM);
-		write_stderr(_("%s: could not register service \"%s\": error code %lu\n"), progname, register_servicename, GetLastError());
+		write_stderr(_("%s: could not register service \"%s\": error code %lu\n"),
+					 progname, register_servicename,
+					 (unsigned long) GetLastError());
 		exit(1);
 	}
 	CloseServiceHandle(hService);
@@ -1484,14 +1483,18 @@ pgwin32_doUnregister(void)
 	if ((hService = OpenService(hSCM, register_servicename, DELETE)) == NULL)
 	{
 		CloseServiceHandle(hSCM);
-		write_stderr(_("%s: could not open service \"%s\": error code %lu\n"), progname, register_servicename, GetLastError());
+		write_stderr(_("%s: could not open service \"%s\": error code %lu\n"),
+					 progname, register_servicename,
+					 (unsigned long) GetLastError());
 		exit(1);
 	}
 	if (!DeleteService(hService))
 	{
 		CloseServiceHandle(hService);
 		CloseServiceHandle(hSCM);
-		write_stderr(_("%s: could not unregister service \"%s\": error code %lu\n"), progname, register_servicename, GetLastError());
+		write_stderr(_("%s: could not unregister service \"%s\": error code %lu\n"),
+					 progname, register_servicename,
+					 (unsigned long) GetLastError());
 		exit(1);
 	}
 	CloseServiceHandle(hService);
@@ -1595,15 +1598,27 @@ pgwin32_ServiceMain(DWORD argc, LPTSTR *argv)
 	switch (ret)
 	{
 		case WAIT_OBJECT_0:		/* shutdown event */
-			kill(postmasterPID, SIGINT);
+			{
+				/*
+				 * status.dwCheckPoint can be incremented by
+				 * test_postmaster_connection(true), so it might not start
+				 * from 0.
+				 */
+				int			maxShutdownCheckPoint = status.dwCheckPoint + 12;;
 
-			/*
-			 * Increment the checkpoint and try again Abort after 12
-			 * checkpoints as the postmaster has probably hung
-			 */
-			while (WaitForSingleObject(postmasterProcess, 5000) == WAIT_TIMEOUT && status.dwCheckPoint < 12)
-				status.dwCheckPoint++;
-			break;
+				kill(postmasterPID, SIGINT);
+
+				/*
+				 * Increment the checkpoint and try again. Abort after 12
+				 * checkpoints as the postmaster has probably hung.
+				 */
+				while (WaitForSingleObject(postmasterProcess, 5000) == WAIT_TIMEOUT && status.dwCheckPoint < maxShutdownCheckPoint)
+				{
+					status.dwCheckPoint++;
+					SetServiceStatus(hStatus, (LPSERVICE_STATUS) &status);
+				}
+				break;
+			}
 
 		case (WAIT_OBJECT_0 + 1):		/* postmaster went down */
 			break;
@@ -1627,7 +1642,9 @@ pgwin32_doRunAsService(void)
 
 	if (StartServiceCtrlDispatcher(st) == 0)
 	{
-		write_stderr(_("%s: could not start service \"%s\": error code %lu\n"), progname, register_servicename, GetLastError());
+		write_stderr(_("%s: could not start service \"%s\": error code %lu\n"),
+					 progname, register_servicename,
+					 (unsigned long) GetLastError());
 		exit(1);
 	}
 }
@@ -1708,7 +1725,14 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 	/* Open the current token to use as a base for the restricted one */
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &origToken))
 	{
-		write_stderr(_("%s: could not open process token: error code %lu\n"), progname, GetLastError());
+		/*
+		 * Most Windows targets make DWORD a 32-bit unsigned long.  Cygwin
+		 * x86_64, an LP64 target, makes it a 32-bit unsigned int.  In code
+		 * built for Cygwin as well as for native Windows targets, cast DWORD
+		 * before printing.
+		 */
+		write_stderr(_("%s: could not open process token: error code %lu\n"),
+					 progname, (unsigned long) GetLastError());
 		return 0;
 	}
 
@@ -1721,7 +1745,8 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 	SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_POWER_USERS, 0, 0, 0, 0, 0,
 								  0, &dropSids[1].Sid))
 	{
-		write_stderr(_("%s: could not allocate SIDs: error code %lu\n"), progname, GetLastError());
+		write_stderr(_("%s: could not allocate SIDs: error code %lu\n"),
+					 progname, (unsigned long) GetLastError());
 		return 0;
 	}
 
@@ -1740,7 +1765,8 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 
 	if (!b)
 	{
-		write_stderr(_("%s: could not create restricted token: error code %lu\n"), progname, GetLastError());
+		write_stderr(_("%s: could not create restricted token: error code %lu\n"),
+					 progname, (unsigned long) GetLastError());
 		return 0;
 	}
 
@@ -1791,7 +1817,8 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, bool as_ser
 				HANDLE		job;
 				char		jobname[128];
 
-				sprintf(jobname, "PostgreSQL_%lu", processInfo->dwProcessId);
+				sprintf(jobname, "PostgreSQL_%lu",
+						(unsigned long) processInfo->dwProcessId);
 
 				job = _CreateJobObject(NULL, jobname);
 				if (job)
@@ -2184,7 +2211,16 @@ main(int argc, char **argv)
 					register_servicename = pg_strdup(optarg);
 					break;
 				case 'o':
-					post_opts = pg_strdup(optarg);
+					/* append option? */
+					if (!post_opts)
+						post_opts = pg_strdup(optarg);
+					else
+					{
+						char	   *old_post_opts = post_opts;
+
+						post_opts = psprintf("%s %s", old_post_opts, optarg);
+						free(old_post_opts);
+					}
 					break;
 				case 'p':
 					exec_path = pg_strdup(optarg);

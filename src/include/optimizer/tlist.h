@@ -4,7 +4,7 @@
  *	  prototypes for tlist.c.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/tlist.h
@@ -42,6 +42,9 @@ extern Node *get_sortgroupclause_expr(SortGroupClause *sgClause,
 						 List *targetList);
 extern List *get_sortgrouplist_exprs(List *sgClauses,
 						List *targetList);
+
+extern SortGroupClause *get_sortgroupref_clause(Index sortref,
+						List *clauses);
 
 extern Oid *extract_grouping_ops(List *groupClause);
 extern AttrNumber *extract_grouping_cols(List *groupClause, List *tlist);

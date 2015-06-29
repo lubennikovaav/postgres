@@ -8,7 +8,7 @@
  * stepping on each others' toes.  Formerly we used table-level locks
  * on pg_database, but that's too coarse-grained.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,6 +28,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -39,6 +40,7 @@
 #include "catalog/pg_tablespace.h"
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
+#include "commands/dbcommands_xlog.h"
 #include "commands/defrem.h"
 #include "commands/seclabel.h"
 #include "commands/tablespace.h"
@@ -549,15 +551,17 @@ createdb(const CreatedbStmt *stmt)
 	InvokeObjectPostCreateHook(DatabaseRelationId, dboid, 0);
 
 	/*
-	 * Force a checkpoint before starting the copy. This will force dirty
-	 * buffers out to disk, to ensure source database is up-to-date on disk
-	 * for the copy. FlushDatabaseBuffers() would suffice for that, but we
-	 * also want to process any pending unlink requests. Otherwise, if a
-	 * checkpoint happened while we're copying files, a file might be deleted
-	 * just when we're about to copy it, causing the lstat() call in copydir()
-	 * to fail with ENOENT.
+	 * Force a checkpoint before starting the copy. This will force all dirty
+	 * buffers, including those of unlogged tables, out to disk, to ensure
+	 * source database is up-to-date on disk for the copy.
+	 * FlushDatabaseBuffers() would suffice for that, but we also want to
+	 * process any pending unlink requests. Otherwise, if a checkpoint
+	 * happened while we're copying files, a file might be deleted just when
+	 * we're about to copy it, causing the lstat() call in copydir() to fail
+	 * with ENOENT.
 	 */
-	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
+	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+					  | CHECKPOINT_FLUSH_ALL);
 
 	/*
 	 * Once we start copying subdirectories, we need to be able to clean 'em
@@ -616,19 +620,17 @@ createdb(const CreatedbStmt *stmt)
 			/* Record the filesystem change in XLOG */
 			{
 				xl_dbase_create_rec xlrec;
-				XLogRecData rdata[1];
 
 				xlrec.db_id = dboid;
 				xlrec.tablespace_id = dsttablespace;
 				xlrec.src_db_id = src_dboid;
 				xlrec.src_tablespace_id = srctablespace;
 
-				rdata[0].data = (char *) &xlrec;
-				rdata[0].len = sizeof(xl_dbase_create_rec);
-				rdata[0].buffer = InvalidBuffer;
-				rdata[0].next = NULL;
+				XLogBeginInsert();
+				XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_create_rec));
 
-				(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_CREATE, rdata);
+				(void) XLogInsert(RM_DBASE_ID,
+								  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
 			}
 		}
 		heap_endscan(scan);
@@ -839,10 +841,12 @@ dropdb(const char *dbname, bool missing_ok)
 	if (ReplicationSlotsCountDBSlots(db_id, &nslots, &nslots_active))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("database \"%s\" is used by a logical decoding slot",
-						dbname),
-				 errdetail("There are %d slot(s), %d of them active",
-						   nslots, nslots_active)));
+			  errmsg("database \"%s\" is used by a logical replication slot",
+					 dbname),
+				 errdetail_plural("There is %d slot, %d of them active.",
+								  "There are %d slots, %d of them active.",
+								  nslots,
+								  nslots, nslots_active)));
 
 	/*
 	 * Check for other backends in the target database.  (Because we hold the
@@ -935,7 +939,7 @@ dropdb(const char *dbname, bool missing_ok)
 /*
  * Rename database
  */
-Oid
+ObjectAddress
 RenameDatabase(const char *oldname, const char *newname)
 {
 	Oid			db_id;
@@ -943,6 +947,7 @@ RenameDatabase(const char *oldname, const char *newname)
 	Relation	rel;
 	int			notherbackends;
 	int			npreparedxacts;
+	ObjectAddress address;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
@@ -1010,12 +1015,14 @@ RenameDatabase(const char *oldname, const char *newname)
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
 
+	ObjectAddressSet(address, DatabaseRelationId, db_id);
+
 	/*
 	 * Close pg_database, but keep lock till commit.
 	 */
 	heap_close(rel, NoLock);
 
-	return db_id;
+	return address;
 }
 
 
@@ -1136,8 +1143,9 @@ movedb(const char *dbname, const char *tblspcname)
 	dst_dbpath = GetDatabasePath(db_id, dst_tblspcoid);
 
 	/*
-	 * Force a checkpoint before proceeding. This will force dirty buffers out
-	 * to disk, to ensure source database is up-to-date on disk for the copy.
+	 * Force a checkpoint before proceeding. This will force all dirty
+	 * buffers, including those of unlogged tables, out to disk, to ensure
+	 * source database is up-to-date on disk for the copy.
 	 * FlushDatabaseBuffers() would suffice for that, but we also want to
 	 * process any pending unlink requests. Otherwise, the check for existing
 	 * files in the target directory might fail unnecessarily, not to mention
@@ -1145,7 +1153,25 @@ movedb(const char *dbname, const char *tblspcname)
 	 * On Windows, this also ensures that background procs don't hold any open
 	 * files, which would cause rmdir() to fail.
 	 */
-	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
+	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
+					  | CHECKPOINT_FLUSH_ALL);
+
+	/*
+	 * Now drop all buffers holding data of the target database; they should
+	 * no longer be dirty so DropDatabaseBuffers is safe.
+	 *
+	 * It might seem that we could just let these buffers age out of shared
+	 * buffers naturally, since they should not get referenced anymore.  The
+	 * problem with that is that if the user later moves the database back to
+	 * its original tablespace, any still-surviving buffers would appear to
+	 * contain valid data again --- but they'd be missing any changes made in
+	 * the database while it was in the new tablespace.  In any case, freeing
+	 * buffers that should never be used again seems worth the cycles.
+	 *
+	 * Note: it'd be sufficient to get rid of buffers matching db_id and
+	 * src_tblspcoid, but bufmgr.c presently provides no API for that.
+	 */
+	DropDatabaseBuffers(db_id);
 
 	/*
 	 * Check for existence of files in the target directory, i.e., objects of
@@ -1202,19 +1228,17 @@ movedb(const char *dbname, const char *tblspcname)
 		 */
 		{
 			xl_dbase_create_rec xlrec;
-			XLogRecData rdata[1];
 
 			xlrec.db_id = db_id;
 			xlrec.tablespace_id = dst_tblspcoid;
 			xlrec.src_db_id = db_id;
 			xlrec.src_tablespace_id = src_tblspcoid;
 
-			rdata[0].data = (char *) &xlrec;
-			rdata[0].len = sizeof(xl_dbase_create_rec);
-			rdata[0].buffer = InvalidBuffer;
-			rdata[0].next = NULL;
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_create_rec));
 
-			(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_CREATE, rdata);
+			(void) XLogInsert(RM_DBASE_ID,
+							  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
 		}
 
 		/*
@@ -1306,17 +1330,15 @@ movedb(const char *dbname, const char *tblspcname)
 	 */
 	{
 		xl_dbase_drop_rec xlrec;
-		XLogRecData rdata[1];
 
 		xlrec.db_id = db_id;
 		xlrec.tablespace_id = src_tblspcoid;
 
-		rdata[0].data = (char *) &xlrec;
-		rdata[0].len = sizeof(xl_dbase_drop_rec);
-		rdata[0].buffer = InvalidBuffer;
-		rdata[0].next = NULL;
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
 
-		(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_DROP, rdata);
+		(void) XLogInsert(RM_DBASE_ID,
+						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
 	}
 
 	/* Now it's safe to release the database lock */
@@ -1542,7 +1564,7 @@ AlterDatabaseSet(AlterDatabaseSetStmt *stmt)
 /*
  * ALTER DATABASE name OWNER TO newowner
  */
-Oid
+ObjectAddress
 AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 {
 	Oid			db_id;
@@ -1551,6 +1573,7 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 	ScanKeyData scankey;
 	SysScanDesc scan;
 	Form_pg_database datForm;
+	ObjectAddress address;
 
 	/*
 	 * Get the old tuple.  We don't need a lock on the database per se,
@@ -1645,12 +1668,14 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, HeapTupleGetOid(tuple), 0);
 
+	ObjectAddressSet(address, DatabaseRelationId, db_id);
+
 	systable_endscan(scan);
 
 	/* Close pg_database, but keep lock till commit */
 	heap_close(rel, NoLock);
 
-	return db_id;
+	return address;
 }
 
 
@@ -1846,17 +1871,15 @@ remove_dbtablespaces(Oid db_id)
 		/* Record the filesystem change in XLOG */
 		{
 			xl_dbase_drop_rec xlrec;
-			XLogRecData rdata[1];
 
 			xlrec.db_id = db_id;
 			xlrec.tablespace_id = dsttablespace;
 
-			rdata[0].data = (char *) &xlrec;
-			rdata[0].len = sizeof(xl_dbase_drop_rec);
-			rdata[0].buffer = InvalidBuffer;
-			rdata[0].next = NULL;
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
 
-			(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_DROP, rdata);
+			(void) XLogInsert(RM_DBASE_ID,
+							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
 		}
 
 		pfree(dstpath);
@@ -2019,12 +2042,12 @@ get_database_name(Oid dbid)
  * DATABASE resource manager's routines
  */
 void
-dbase_redo(XLogRecPtr lsn, XLogRecord *record)
+dbase_redo(XLogReaderState *record)
 {
-	uint8		info = record->xl_info & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	/* Backup blocks are not used in dbase records */
-	Assert(!(record->xl_info & XLR_BKP_BLOCK_MASK));
+	Assert(!XLogRecHasAnyBlockRefs(record));
 
 	if (info == XLOG_DBASE_CREATE)
 	{

@@ -194,7 +194,7 @@ SELECT * FROM atestv2; -- fail (even though regressuser2 can access underlying a
 -- Test column level permissions
 
 SET SESSION AUTHORIZATION regressuser1;
-CREATE TABLE atest5 (one int, two int, three int);
+CREATE TABLE atest5 (one int, two int unique, three int, four int unique);
 CREATE TABLE atest6 (one int, two int, blue int);
 GRANT SELECT (one), INSERT (two), UPDATE (three) ON atest5 TO regressuser4;
 GRANT ALL (one) ON atest5 TO regressuser3;
@@ -245,6 +245,23 @@ INSERT INTO atest5 VALUES (5,5,5); -- fail
 UPDATE atest5 SET three = 10; -- ok
 UPDATE atest5 SET one = 8; -- fail
 UPDATE atest5 SET three = 5, one = 2; -- fail
+-- Check that column level privs are enforced in RETURNING
+-- Ok.
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = 10;
+-- Error. No SELECT on column three.
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = 10 RETURNING atest5.three;
+-- Ok.  May SELECT on column "one":
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = 10 RETURNING atest5.one;
+-- Check that column level privileges are enforced for EXCLUDED
+-- Ok. we may select one
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = EXCLUDED.one;
+-- Error. No select rights on three
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set three = EXCLUDED.three;
+INSERT INTO atest5(two) VALUES (6) ON CONFLICT (two) DO UPDATE set one = 8; -- fails (due to UPDATE)
+INSERT INTO atest5(three) VALUES (4) ON CONFLICT (two) DO UPDATE set three = 10; -- fails (due to INSERT)
+-- Check that the the columns in the inference require select privileges
+-- Error. No privs on four
+INSERT INTO atest5(three) VALUES (4) ON CONFLICT (four) DO UPDATE set three = 10;
 
 SET SESSION AUTHORIZATION regressuser1;
 REVOKE ALL (one) ON atest5 FROM regressuser4;
@@ -255,6 +272,31 @@ SELECT one FROM atest5; -- fail
 UPDATE atest5 SET one = 1; -- fail
 SELECT atest6 FROM atest6; -- ok
 COPY atest6 TO stdout; -- ok
+
+-- check error reporting with column privs
+SET SESSION AUTHORIZATION regressuser1;
+CREATE TABLE t1 (c1 int, c2 int, c3 int check (c3 < 5), primary key (c1, c2));
+GRANT SELECT (c1) ON t1 TO regressuser2;
+GRANT INSERT (c1, c2, c3) ON t1 TO regressuser2;
+GRANT UPDATE (c1, c2, c3) ON t1 TO regressuser2;
+
+-- seed data
+INSERT INTO t1 VALUES (1, 1, 1);
+INSERT INTO t1 VALUES (1, 2, 1);
+INSERT INTO t1 VALUES (2, 1, 2);
+INSERT INTO t1 VALUES (2, 2, 2);
+INSERT INTO t1 VALUES (3, 1, 3);
+
+SET SESSION AUTHORIZATION regressuser2;
+INSERT INTO t1 (c1, c2) VALUES (1, 1); -- fail, but row not shown
+UPDATE t1 SET c2 = 1; -- fail, but row not shown
+INSERT INTO t1 (c1, c2) VALUES (null, null); -- fail, but see columns being inserted
+INSERT INTO t1 (c3) VALUES (null); -- fail, but see columns being inserted or have SELECT
+INSERT INTO t1 (c1) VALUES (5); -- fail, but see columns being inserted or have SELECT
+UPDATE t1 SET c3 = 10; -- fail, but see columns with SELECT rights, or being modified
+
+SET SESSION AUTHORIZATION regressuser1;
+DROP TABLE t1;
 
 -- test column-level privileges when involved with DELETE
 SET SESSION AUTHORIZATION regressuser1;

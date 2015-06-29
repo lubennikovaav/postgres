@@ -3,7 +3,7 @@
  * test_decoding.c
  *		  example logical decoding output plugin
  *
- * Copyright (c) 2012-2014, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2015, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/test_decoding/test_decoding.c
@@ -21,6 +21,7 @@
 
 #include "replication/output_plugin.h"
 #include "replication/logical.h"
+#include "replication/origin.h"
 
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -41,6 +42,9 @@ typedef struct
 	MemoryContext context;
 	bool		include_xids;
 	bool		include_timestamp;
+	bool		skip_empty_xacts;
+	bool		xact_wrote_changes;
+	bool		only_local;
 } TestDecodingData;
 
 static void pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
@@ -48,11 +52,17 @@ static void pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *
 static void pg_decode_shutdown(LogicalDecodingContext *ctx);
 static void pg_decode_begin_txn(LogicalDecodingContext *ctx,
 					ReorderBufferTXN *txn);
+static void pg_output_begin(LogicalDecodingContext *ctx,
+				TestDecodingData *data,
+				ReorderBufferTXN *txn,
+				bool last_write);
 static void pg_decode_commit_txn(LogicalDecodingContext *ctx,
 					 ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 static void pg_decode_change(LogicalDecodingContext *ctx,
 				 ReorderBufferTXN *txn, Relation rel,
 				 ReorderBufferChange *change);
+static bool pg_decode_filter(LogicalDecodingContext *ctx,
+				 RepOriginId origin_id);
 
 void
 _PG_init(void)
@@ -70,6 +80,7 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->begin_cb = pg_decode_begin_txn;
 	cb->change_cb = pg_decode_change;
 	cb->commit_cb = pg_decode_commit_txn;
+	cb->filter_by_origin_cb = pg_decode_filter;
 	cb->shutdown_cb = pg_decode_shutdown;
 }
 
@@ -82,7 +93,7 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 	ListCell   *option;
 	TestDecodingData *data;
 
-	data = palloc(sizeof(TestDecodingData));
+	data = palloc0(sizeof(TestDecodingData));
 	data->context = AllocSetContextCreate(ctx->context,
 										  "text conversion context",
 										  ALLOCSET_DEFAULT_MINSIZE,
@@ -90,6 +101,8 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 										  ALLOCSET_DEFAULT_MAXSIZE);
 	data->include_xids = true;
 	data->include_timestamp = false;
+	data->skip_empty_xacts = false;
+	data->only_local = false;
 
 	ctx->output_plugin_private = data;
 
@@ -137,6 +150,28 @@ pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			if (force_binary)
 				opt->output_type = OUTPUT_PLUGIN_BINARY_OUTPUT;
 		}
+		else if (strcmp(elem->defname, "skip-empty-xacts") == 0)
+		{
+
+			if (elem->arg == NULL)
+				data->skip_empty_xacts = true;
+			else if (!parse_bool(strVal(elem->arg), &data->skip_empty_xacts))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				  errmsg("could not parse value \"%s\" for parameter \"%s\"",
+						 strVal(elem->arg), elem->defname)));
+		}
+		else if (strcmp(elem->defname, "only-local") == 0)
+		{
+
+			if (elem->arg == NULL)
+				data->only_local = true;
+			else if (!parse_bool(strVal(elem->arg), &data->only_local))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				  errmsg("could not parse value \"%s\" for parameter \"%s\"",
+						 strVal(elem->arg), elem->defname)));
+		}
 		else
 		{
 			ereport(ERROR,
@@ -164,12 +199,22 @@ pg_decode_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
 	TestDecodingData *data = ctx->output_plugin_private;
 
-	OutputPluginPrepareWrite(ctx, true);
+	data->xact_wrote_changes = false;
+	if (data->skip_empty_xacts)
+		return;
+
+	pg_output_begin(ctx, data, txn, true);
+}
+
+static void
+pg_output_begin(LogicalDecodingContext *ctx, TestDecodingData *data, ReorderBufferTXN *txn, bool last_write)
+{
+	OutputPluginPrepareWrite(ctx, last_write);
 	if (data->include_xids)
 		appendStringInfo(ctx->out, "BEGIN %u", txn->xid);
 	else
 		appendStringInfoString(ctx->out, "BEGIN");
-	OutputPluginWrite(ctx, true);
+	OutputPluginWrite(ctx, last_write);
 }
 
 /* COMMIT callback */
@@ -178,6 +223,9 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 XLogRecPtr commit_lsn)
 {
 	TestDecodingData *data = ctx->output_plugin_private;
+
+	if (data->skip_empty_xacts && !data->xact_wrote_changes)
+		return;
 
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
@@ -190,6 +238,17 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 						 timestamptz_to_str(txn->commit_time));
 
 	OutputPluginWrite(ctx, true);
+}
+
+static bool
+pg_decode_filter(LogicalDecodingContext *ctx,
+				 RepOriginId origin_id)
+{
+	TestDecodingData *data = ctx->output_plugin_private;
+
+	if (data->only_local && origin_id != InvalidRepOriginId)
+		return true;
+	return false;
 }
 
 /*
@@ -286,7 +345,7 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple, bool skip_
 		typid = attr->atttypid;
 
 		/* get Datum from tuple */
-		origval = fastgetattr(tuple, natt + 1, tupdesc, &isnull);
+		origval = heap_getattr(tuple, natt + 1, tupdesc, &isnull);
 
 		if (isnull && skip_nulls)
 			continue;
@@ -338,6 +397,14 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	MemoryContext old;
 
 	data = ctx->output_plugin_private;
+
+	/* output BEGIN if we haven't yet */
+	if (data->skip_empty_xacts && !data->xact_wrote_changes)
+	{
+		pg_output_begin(ctx, data, txn, false);
+	}
+	data->xact_wrote_changes = true;
+
 	class_form = RelationGetForm(relation);
 	tupdesc = RelationGetDescr(relation);
 
@@ -352,7 +419,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 													  get_namespace_name(
 							  get_rel_namespace(RelationGetRelid(relation))),
 											  NameStr(class_form->relname)));
-	appendStringInfoString(ctx->out, ":");
+	appendStringInfoChar(ctx->out, ':');
 
 	switch (change->action)
 	{

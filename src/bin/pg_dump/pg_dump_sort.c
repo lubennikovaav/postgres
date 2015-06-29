@@ -4,7 +4,7 @@
  *	  Sort the items of a dump into a safe order for dumping
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -13,9 +13,11 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres_fe.h"
+
 #include "pg_backup_archiver.h"
 #include "pg_backup_utils.h"
-#include "parallel.h"
+#include "pg_dump.h"
 
 /* translator: this is a module name */
 static const char *modulename = gettext_noop("sorter");
@@ -26,8 +28,8 @@ static const char *modulename = gettext_noop("sorter");
  * by OID.  (This is a relatively crude hack to provide semi-reasonable
  * behavior for old databases without full dependency info.)  Note: collations,
  * extensions, text search, foreign-data, materialized view, event trigger,
- * and default ACL objects can't really happen here, so the rather bogus
- * priorities for them don't matter.
+ * policies, transforms, and default ACL objects can't really happen here, so the rather
+ * bogus priorities for them don't matter.
  *
  * NOTE: object-type priorities must match the section assignments made in
  * pg_dump.c; that is, PRE_DATA objects must sort before DO_PRE_DATA_BOUNDARY,
@@ -65,12 +67,14 @@ static const int oldObjectTypePriority[] =
 	4,							/* DO_FDW */
 	4,							/* DO_FOREIGN_SERVER */
 	19,							/* DO_DEFAULT_ACL */
+	4,							/* DO_TRANSFORM */
 	9,							/* DO_BLOB */
 	12,							/* DO_BLOB_DATA */
 	10,							/* DO_PRE_DATA_BOUNDARY */
 	13,							/* DO_POST_DATA_BOUNDARY */
 	20,							/* DO_EVENT_TRIGGER */
-	15							/* DO_REFRESH_MATVIEW */
+	15,							/* DO_REFRESH_MATVIEW */
+	21							/* DO_POLICY */
 };
 
 /*
@@ -113,12 +117,14 @@ static const int newObjectTypePriority[] =
 	16,							/* DO_FDW */
 	17,							/* DO_FOREIGN_SERVER */
 	31,							/* DO_DEFAULT_ACL */
+	3,							/* DO_TRANSFORM */
 	21,							/* DO_BLOB */
 	24,							/* DO_BLOB_DATA */
 	22,							/* DO_PRE_DATA_BOUNDARY */
 	25,							/* DO_POST_DATA_BOUNDARY */
 	32,							/* DO_EVENT_TRIGGER */
-	33							/* DO_REFRESH_MATVIEW */
+	33,							/* DO_REFRESH_MATVIEW */
+	34							/* DO_POLICY */
 };
 
 static DumpId preDataBoundId;
@@ -287,13 +293,30 @@ DOTypeNameCompare(const void *p1, const void *p2)
 	{
 		FuncInfo   *fobj1 = *(FuncInfo *const *) p1;
 		FuncInfo   *fobj2 = *(FuncInfo *const *) p2;
+		int			i;
 
 		cmpval = fobj1->nargs - fobj2->nargs;
 		if (cmpval != 0)
 			return cmpval;
-		cmpval = strcmp(fobj1->proiargs, fobj2->proiargs);
-		if (cmpval != 0)
-			return cmpval;
+		for (i = 0; i < fobj1->nargs; i++)
+		{
+			TypeInfo   *argtype1 = findTypeByOid(fobj1->argtypes[i]);
+			TypeInfo   *argtype2 = findTypeByOid(fobj2->argtypes[i]);
+
+			if (argtype1 && argtype2)
+			{
+				if (argtype1->dobj.namespace && argtype2->dobj.namespace)
+				{
+					cmpval = strcmp(argtype1->dobj.namespace->dobj.name,
+									argtype2->dobj.namespace->dobj.name);
+					if (cmpval != 0)
+						return cmpval;
+				}
+				cmpval = strcmp(argtype1->dobj.name, argtype2->dobj.name);
+				if (cmpval != 0)
+					return cmpval;
+			}
+		}
 	}
 	else if (obj1->objType == DO_OPERATOR)
 	{
@@ -1379,6 +1402,13 @@ describeDumpableObject(DumpableObject *obj, char *buf, int bufsize)
 					 ((CastInfo *) obj)->casttarget,
 					 obj->dumpId, obj->catId.oid);
 			return;
+		case DO_TRANSFORM:
+			snprintf(buf, bufsize,
+					 "TRANSFORM %u lang %u  (ID %d OID %u)",
+					 ((TransformInfo *) obj)->trftype,
+					 ((TransformInfo *) obj)->trflang,
+					 obj->dumpId, obj->catId.oid);
+			return;
 		case DO_TABLE_DATA:
 			snprintf(buf, bufsize,
 					 "TABLE DATA %s  (ID %d OID %u)",
@@ -1433,6 +1463,11 @@ describeDumpableObject(DumpableObject *obj, char *buf, int bufsize)
 			snprintf(buf, bufsize,
 					 "BLOB DATA  (ID %d)",
 					 obj->dumpId);
+			return;
+		case DO_POLICY:
+			snprintf(buf, bufsize,
+					 "POLICY (ID %d OID %u)",
+					 obj->dumpId, obj->catId.oid);
 			return;
 		case DO_PRE_DATA_BOUNDARY:
 			snprintf(buf, bufsize,

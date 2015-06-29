@@ -3,7 +3,7 @@
  * lsyscache.c
  *	  Convenience routines for common queries in the system catalog cache.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -19,16 +19,20 @@
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "bootstrap/bootstrap.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
+#include "catalog/pg_language.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_range.h"
 #include "catalog/pg_statistic.h"
+#include "catalog/pg_transform.h"
+#include "catalog/pg_tablesample_method.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -976,6 +980,30 @@ get_constraint_name(Oid conoid)
 		return NULL;
 }
 
+/*				---------- LANGUAGE CACHE ----------					 */
+
+char *
+get_language_name(Oid langoid, bool missing_ok)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(LANGOID, ObjectIdGetDatum(langoid));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_language lantup = (Form_pg_language) GETSTRUCT(tp);
+		char	   *result;
+
+		result = pstrdup(NameStr(lantup->lanname));
+		ReleaseSysCache(tp);
+		return result;
+	}
+
+	if (!missing_ok)
+		elog(ERROR, "cache lookup failed for language %u",
+			 langoid);
+	return NULL;
+}
+
 /*				---------- OPCLASS CACHE ----------						 */
 
 /*
@@ -1742,6 +1770,51 @@ get_rel_tablespace(Oid relid)
 }
 
 
+/*				---------- TRANSFORM CACHE ----------						 */
+
+Oid
+get_transform_fromsql(Oid typid, Oid langid, List *trftypes)
+{
+	HeapTuple	tup;
+
+	if (!list_member_oid(trftypes, typid))
+		return InvalidOid;
+
+	tup = SearchSysCache2(TRFTYPELANG, typid, langid);
+	if (HeapTupleIsValid(tup))
+	{
+		Oid			funcid;
+
+		funcid = ((Form_pg_transform) GETSTRUCT(tup))->trffromsql;
+		ReleaseSysCache(tup);
+		return funcid;
+	}
+	else
+		return InvalidOid;
+}
+
+Oid
+get_transform_tosql(Oid typid, Oid langid, List *trftypes)
+{
+	HeapTuple	tup;
+
+	if (!list_member_oid(trftypes, typid))
+		return InvalidOid;
+
+	tup = SearchSysCache2(TRFTYPELANG, typid, langid);
+	if (HeapTupleIsValid(tup))
+	{
+		Oid			funcid;
+
+		funcid = ((Form_pg_transform) GETSTRUCT(tup))->trftosql;
+		ReleaseSysCache(tup);
+		return funcid;
+	}
+	else
+		return InvalidOid;
+}
+
+
 /*				---------- TYPE CACHE ----------						 */
 
 /*
@@ -2355,6 +2428,27 @@ get_array_type(Oid typid)
 }
 
 /*
+ * get_promoted_array_type
+ *
+ *		The "promoted" type is what you'd get from an ARRAY(SELECT ...)
+ *		construct, that is, either the corresponding "true" array type
+ *		if the input is a scalar type that has such an array type,
+ *		or the same type if the input is already a "true" array type.
+ *		Returns InvalidOid if neither rule is satisfied.
+ */
+Oid
+get_promoted_array_type(Oid typid)
+{
+	Oid			array_type = get_array_type(typid);
+
+	if (OidIsValid(array_type))
+		return array_type;
+	if (OidIsValid(get_element_type(typid)))
+		return typid;
+	return InvalidOid;
+}
+
+/*
  * get_base_element_type
  *		Given the type OID, get the typelem, looking "through" any domain
  *		to its underlying array type.
@@ -2863,6 +2957,20 @@ get_namespace_name(Oid nspid)
 		return NULL;
 }
 
+/*
+ * get_namespace_name_or_temp
+ *		As above, but if it is this backend's temporary namespace, return
+ *		"pg_temp" instead.
+ */
+char *
+get_namespace_name_or_temp(Oid nspid)
+{
+	if (isTempNamespace(nspid))
+		return "pg_temp";
+	else
+		return get_namespace_name(nspid);
+}
+
 /*				---------- PG_RANGE CACHE ----------				 */
 
 /*
@@ -2888,4 +2996,30 @@ get_range_subtype(Oid rangeOid)
 	}
 	else
 		return InvalidOid;
+}
+
+/*				---------- PG_TABLESAMPLE_METHOD CACHE ----------			 */
+
+/*
+ * get_tablesample_method_name - given a tablesample method OID,
+ * look up the name or NULL if not found
+ */
+char *
+get_tablesample_method_name(Oid tsmid)
+{
+	HeapTuple	tuple;
+
+	tuple = SearchSysCache1(TABLESAMPLEMETHODOID, ObjectIdGetDatum(tsmid));
+	if (HeapTupleIsValid(tuple))
+	{
+		Form_pg_tablesample_method tup =
+		(Form_pg_tablesample_method) GETSTRUCT(tuple);
+		char	   *result;
+
+		result = pstrdup(NameStr(tup->tsmname));
+		ReleaseSysCache(tuple);
+		return result;
+	}
+	else
+		return NULL;
 }
