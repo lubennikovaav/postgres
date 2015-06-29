@@ -70,6 +70,8 @@ extern Tuplesortstate *tuplesort_begin_index_btree(Relation heapRel,
 							Relation indexRel,
 							bool enforceUnique,
 							int workMem, bool randomAccess);
+extern Tuplesortstate *tuplesort_begin_index_cola(Relation indexRel,
+						   int workMem, bool randomAccess);
 extern Tuplesortstate *tuplesort_begin_index_hash(Relation heapRel,
 						   Relation indexRel,
 						   uint32 hash_mask,

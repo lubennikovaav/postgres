@@ -1374,10 +1374,11 @@ typedef struct SetOperationStmt
 
 typedef enum ObjectType
 {
+	OBJECT_ACCESS_METHOD,
 	OBJECT_AGGREGATE,
 	OBJECT_AMOP,
 	OBJECT_AMPROC,
-	OBJECT_ATTRIBUTE,			/* type's attribute, when distinct from column */
+	OBJECT_ATTRIBUTE,
 	OBJECT_CAST,
 	OBJECT_COLUMN,
 	OBJECT_COLLATION,

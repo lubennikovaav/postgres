@@ -1270,6 +1270,10 @@ doDeletion(const ObjectAddress *object, int flags)
 			DropTransformById(object->objectId);
 			break;
 
+		case OCLASS_AM:
+			RemoveAccessMethodById(object->objectId);
+			break;
+
 		default:
 			elog(ERROR, "unrecognized object class: %u",
 				 object->classId);
@@ -2399,6 +2403,9 @@ getObjectClass(const ObjectAddress *object)
 
 		case TransformRelationId:
 			return OCLASS_TRANSFORM;
+
+		case AccessMethodRelationId:
+			return OCLASS_AM;
 	}
 
 	/* shouldn't get here */

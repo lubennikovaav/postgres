@@ -149,6 +149,7 @@ typedef enum ObjectClass
 	OCLASS_EVENT_TRIGGER,		/* pg_event_trigger */
 	OCLASS_POLICY,				/* pg_policy */
 	OCLASS_TRANSFORM,			/* pg_transform */
+	OCLASS_AM,					/* pg_am */
 	MAX_OCLASS					/* MUST BE LAST */
 } ObjectClass;
 

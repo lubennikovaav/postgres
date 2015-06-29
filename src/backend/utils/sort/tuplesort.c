@@ -492,6 +492,8 @@ static void readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 				int tapenum, unsigned int len);
 static int comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 					   Tuplesortstate *state);
+static int comparetup_index_cola(const SortTuple *a, const SortTuple *b,
+					   Tuplesortstate *state);
 static int comparetup_index_hash(const SortTuple *a, const SortTuple *b,
 					  Tuplesortstate *state);
 static void copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup);
@@ -839,6 +841,97 @@ tuplesort_begin_index_btree(Relation heapRel,
 
 	return state;
 }
+
+ScanKey 
+_cola_mkscankey_nodata(Relation rel)	
+{
+    ScanKey     skey;
+    int         natts;
+    int16      *indoption;
+    int         i;
+    natts = RelationGetNumberOfAttributes(rel);
+    indoption = rel->rd_indoption;
+    skey = (ScanKey) palloc(natts * sizeof(ScanKeyData));
+   
+	 /*Multicolumn indexing is not supported yet*/
+	/*    for (i = 0; i < natts; i++)
+    {*/
+    	i=0;
+        FmgrInfo   *procinfo;
+        int         flags;
+        /*
+         * We can use the cached (default) support procs since no cross-type
+         * comparison can be needed.
+         */
+
+         /* TODO COLAORDER_PROC=1*/
+        procinfo = index_getprocinfo(rel, i+1, 1);
+
+        ScanKeyEntryInitializeWithInfo(&skey[i],
+                                       flags,
+                                       (AttrNumber) (i+1),
+                                       InvalidStrategy,
+                                       InvalidOid,
+                                       rel->rd_indcollation[i],
+                                       procinfo,
+                                       (Datum) 0);
+/*    }*/
+    return skey;
+}
+
+Tuplesortstate *
+tuplesort_begin_index_cola(Relation indexRel,
+						   int workMem, bool randomAccess) {
+
+	Tuplesortstate *state = tuplesort_begin_common(workMem, randomAccess);
+	MemoryContext oldcontext;
+	ScanKey		indexScanKey;
+	int i;
+	oldcontext = MemoryContextSwitchTo(state->sortcontext);
+
+	state->nKeys = RelationGetNumberOfAttributes(indexRel);
+
+	state->comparetup = comparetup_index_cola;
+	state->copytup = copytup_index;
+	state->writetup = writetup_index;
+	state->readtup = readtup_index;
+
+	state->indexRel = indexRel;
+	indexScanKey = _cola_mkscankey_nodata(indexRel);
+
+/* Prepare SortSupport data for each column */
+	state->sortKeys = (SortSupport) palloc0(state->nKeys *
+											sizeof(SortSupportData));
+
+	for (i = 0; i < state->nKeys; i++)
+	{
+		SortSupport sortKey = state->sortKeys + i;
+		ScanKey		scanKey = indexScanKey + i;
+		int16		strategy;
+
+		sortKey->ssup_cxt = CurrentMemoryContext;
+		sortKey->ssup_collation = scanKey->sk_collation;
+		sortKey->ssup_nulls_first =
+			(scanKey->sk_flags & SK_BT_NULLS_FIRST) != 0;
+		sortKey->ssup_attno = scanKey->sk_attno;
+		/* Convey if abbreviation optimization is applicable in principle */
+		sortKey->abbreviate = (i == 0);
+
+		AssertState(sortKey->ssup_attno != 0);
+
+		strategy = (scanKey->sk_flags & SK_BT_DESC) != 0 ?
+			BTGreaterStrategyNumber : BTLessStrategyNumber;
+
+		PrepareSortSupportFromIndexRel(indexRel, strategy, sortKey);
+	}
+
+	_bt_freeskey(indexScanKey);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return state;
+}
+
 
 Tuplesortstate *
 tuplesort_begin_index_hash(Relation heapRel,
@@ -3588,6 +3681,63 @@ comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 				 errtableconstraint(state->heapRel,
 								 RelationGetRelationName(state->indexRel))));
 	}
+
+	/*
+	 * If key values are equal, we sort on ItemPointer.  This does not affect
+	 * validity of the finished index, but it may be useful to have index
+	 * scans in physical order.
+	 */
+	{
+		BlockNumber blk1 = ItemPointerGetBlockNumber(&tuple1->t_tid);
+		BlockNumber blk2 = ItemPointerGetBlockNumber(&tuple2->t_tid);
+
+		if (blk1 != blk2)
+			return (blk1 < blk2) ? -1 : 1;
+	}
+	{
+		OffsetNumber pos1 = ItemPointerGetOffsetNumber(&tuple1->t_tid);
+		OffsetNumber pos2 = ItemPointerGetOffsetNumber(&tuple2->t_tid);
+
+		if (pos1 != pos2)
+			return (pos1 < pos2) ? -1 : 1;
+	}
+
+	return 0;
+}
+
+static int
+comparetup_index_cola(const SortTuple *a, const SortTuple *b,
+					   Tuplesortstate *state)
+{
+/*
+	 * This is similar to comparetup_heap(), but expects index tuples.  There
+	 * is also special handling for enforcing uniqueness, and special
+	 * treatment for equal keys at the end.
+	 */
+	SortSupport sortKey = state->sortKeys;
+	IndexTuple	tuple1;
+	IndexTuple	tuple2;
+	/* int			keysz;
+	TupleDesc	tupDes;
+	bool		equal_hasnull = false;
+	int			nkey; */
+	int32		compare;
+	Datum		datum1,
+				datum2;
+	/* Compare sort key. Do not support NULLs */
+
+	/* Compare the leading sort key */
+	compare = ApplySortComparator(a->datum1, a->isnull1,
+								  b->datum1, b->isnull1,
+								  sortKey);
+
+	//elog(NOTICE, "Debug %d %s %d", DatumGetInt32(a->datum1),(compare==-1)?"<":((compare==1)?">":"="), DatumGetInt32(b->datum1) );
+
+	if (compare != 0)
+		return compare;
+
+	tuple1 = (IndexTuple) a->tuple;
+	tuple2 = (IndexTuple) b->tuple;
 
 	/*
 	 * If key values are equal, we sort on ItemPointer.  This does not affect

@@ -167,8 +167,10 @@ PrepareSortSupportFromIndexRel(Relation indexRel, int16 strategy,
 
 	Assert(ssup->comparator == NULL);
 
+	/* TODO: COLA_AM_OID sets dynamically, so just comment this check
 	if (indexRel->rd_rel->relam != BTREE_AM_OID)
 		elog(ERROR, "unexpected non-btree AM: %u", indexRel->rd_rel->relam);
+	*/
 	if (strategy != BTGreaterStrategyNumber &&
 		strategy != BTLessStrategyNumber)
 		elog(ERROR, "unexpected sort support strategy: %d", strategy);

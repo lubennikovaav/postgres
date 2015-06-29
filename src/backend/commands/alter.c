@@ -382,7 +382,6 @@ ExecRenameStmt(RenameStmt *stmt)
 
 				return address;
 			}
-
 		default:
 			elog(ERROR, "unrecognized rename stmt type: %d",
 				 (int) stmt->renameType);
@@ -769,7 +768,6 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 				return address;
 			}
 			break;
-
 		default:
 			elog(ERROR, "unrecognized AlterOwnerStmt type: %d",
 				 (int) stmt->objectType);

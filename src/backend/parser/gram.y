@@ -604,7 +604,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
 
-	MAPPING MATCH MATERIALIZED MAXVALUE MINUTE_P MINVALUE MODE MONTH_P MOVE
+	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEXT NO NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
@@ -5005,7 +5005,17 @@ DropAssertStmt:
  *****************************************************************************/
 
 DefineStmt:
-			CREATE AGGREGATE func_name aggr_args definition
+			CREATE ACCESS METHOD any_name definition
+				{
+					DefineStmt *n = makeNode(DefineStmt);
+					n->kind = OBJECT_ACCESS_METHOD;
+					n->oldstyle = false;
+					n->defnames = $4;
+					n->args = NIL;
+					n->definition = $5;
+					$$ = (Node *)n;
+				}
+			| CREATE AGGREGATE func_name aggr_args definition
 				{
 					DefineStmt *n = makeNode(DefineStmt);
 					n->kind = OBJECT_AGGREGATE;
@@ -5547,6 +5557,17 @@ DropStmt:	DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior
 					n->behavior = $6;
 					n->concurrent = false;
 					$$ = (Node *) n;
+				}
+			| DROP ACCESS METHOD any_name_list opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_ACCESS_METHOD;
+					n->missing_ok = FALSE;
+					n->objects = $4;
+					n->arguments = NIL;
+					n->behavior = $5;
+					n->concurrent = false;
+					$$ = (Node *)n;
 				}
 			| DROP INDEX CONCURRENTLY any_name_list opt_drop_behavior
 				{
@@ -13708,6 +13729,7 @@ unreserved_keyword:
 			| MATCH
 			| MATERIALIZED
 			| MAXVALUE
+			| METHOD
 			| MINUTE_P
 			| MINVALUE
 			| MODE
