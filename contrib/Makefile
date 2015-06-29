@@ -5,58 +5,9 @@ top_builddir = ..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = \
-		adminpack	\
-		auth_delay	\
-		auto_explain	\
-		btree_gin	\
-		btree_gist	\
-		chkpass		\
-		citext		\
-		cube		\
-		dblink		\
-		dict_int	\
-		dict_xsyn	\
-		dummy_seclabel	\
-		earthdistance	\
-		file_fdw	\
-		fuzzystrmatch	\
-		hstore		\
-		intagg		\
-		intarray	\
-		isn		\
-		lo		\
-		ltree		\
-		oid2name	\
-		pageinspect	\
-		passwordcheck	\
-		pg_archivecleanup \
-		pg_buffercache	\
-		pg_freespacemap \
-		pg_prewarm	\
-		pg_standby	\
+		cola		\
 		pg_stat_statements \
-		pg_test_fsync	\
-		pg_test_timing	\
-		pg_trgm		\
-		pg_upgrade	\
-		pg_upgrade_support \
 		pgbench		\
-		pgcrypto	\
-		pgrowlocks	\
-		pgstattuple	\
-		pg_xlogdump	\
-		postgres_fdw	\
-		seg		\
-		spi		\
-		tablefunc	\
-		tcn		\
-		test_decoding	\
-		test_parser	\
-		test_shm_mq	\
-		tsearch2	\
-		unaccent	\
-		vacuumlo	\
-		worker_spi
 
 ifeq ($(with_openssl),yes)
 SUBDIRS += sslinfo

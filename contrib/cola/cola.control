@@ -1,0 +1,5 @@
+# cola extension
+comment = 'cola access method - COLA based index'
+default_version = '1.0'
+module_pathname = '$libdir/cola'
+relocatable = true
