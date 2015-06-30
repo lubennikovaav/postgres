@@ -34,8 +34,10 @@ colabeginscan(PG_FUNCTION_ARGS)
 	fillColaScanOpaque(so);
 
 	so->curArrState = so->ColaArrayState[0][0];
-	if (!A_ISVISIBLE(so->curArrState))
+	if (!A_ISVISIBLE(so->curArrState)) {
 		so->curArrState = InvalidColaArrayState;
+		so->curBlkno = 0;
+	}
 	else
 		so->curBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), 0);
 
@@ -43,11 +45,17 @@ colabeginscan(PG_FUNCTION_ARGS)
 	so->searchTo = so->curBlkno;
 	so->rlpFrom = so->rlpTo = 0;
 	so->continueArrScan = true;
+	so->firstCall = true;
 	scan->opaque = so;
 
 	PG_RETURN_POINTER(scan);
 }
 
+/*
+ * Open next COLA array to scan.
+ * TODO: set flag CAS_READ, which means we shouldn't clear chosen array till the end of reading
+ * if it was merged down. 
+ */
 uint16 ColaNextScanArray(COLAScanOpaque so) {
 	//elog(NOTICE, "ColaNextScanArray level %d arrnum %d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
 	int i;
@@ -58,17 +66,27 @@ uint16 ColaNextScanArray(COLAScanOpaque so) {
 	if (level == 0)
 		maxArrnum = 2;
 
+	
+	/* Look for next array at the same level.
+	 * Always read arrays using arrnum order.
+	 */
 	for (i = A_ARRNUM(so->curArrState)+1; i < maxArrnum; i++) {
 		if ((A_ISVISIBLE(so->ColaArrayState[level][i]))&&(newArrState == InvalidColaArrayState)) {
-			//elog(NOTICE, "ColaNextScanArray 2 so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
+			elog(NOTICE, "ColaNextScanArray 2 so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
 			newArrState = so->ColaArrayState[level][i];
 		}
 	}
 
+	/*
+	 * Scan COLA, looking for Visible array to read.
+	 */
 	while ((newArrState == InvalidColaArrayState)&&(level < MaxColaHeight-1)) {
 		level++;
 		for (i = 0; i < 3; i++) {
-			if ((A_ISEXIST(so->ColaArrayState[level][i]))&&(A_ISVISIBLE(so->ColaArrayState[level][i]))) {
+			//Is it possible?
+			if ((!A_ISEXIST(so->ColaArrayState[level][i]))&&(A_ISVISIBLE(so->ColaArrayState[level][i])))
+				elog(ERROR, "COLA array %d doesn't exist, but VISIBLE.", so->ColaArrayState[level][i]);
+			if (A_ISVISIBLE(so->ColaArrayState[level][i])) {
 				//elog(NOTICE, "ColaNextScanArray 3 so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
 				newArrState = so->ColaArrayState[level][i];
 				break;
@@ -128,7 +146,8 @@ colarescan(PG_FUNCTION_ARGS)
 
 	if (so->curArrState != InvalidColaArrayState)
 		so->curBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), 0);
-
+	else
+		so->curBlkno = 0;
 	memmove(scan->keyData, key, scan->numberOfKeys * sizeof(ScanKeyData));
 	PG_RETURN_VOID();
 }
@@ -289,7 +308,7 @@ ColaFindRlp(IndexScanDesc scan, COLAScanOpaque so, IndexTuple it) {
 void
 colaScanPage(IndexScanDesc scan, BlockNumber blkno, TIDBitmap *tbm, int64 *ntids)
 {
-	//elog(NOTICE, "Debug. colaScanPage, blkno %d", blkno);
+	elog(NOTICE, "Debug. colaScanPage, blkno %d", blkno);
 	COLAScanOpaque so = (COLAScanOpaque) scan->opaque;
 	Buffer		buffer;
 	Page		page;
@@ -374,27 +393,50 @@ Datum       colagettuple(PG_FUNCTION_ARGS);
 Datum
 colagettuple(PG_FUNCTION_ARGS)
 {
-	//elog(NOTICE, "Debug. colagettuple");
+	elog(NOTICE, "Debug. colagettuple");
 	IndexScanDesc scan = (IndexScanDesc) PG_GETARG_POINTER(0);
+	ScanDirection dir = (ScanDirection) PG_GETARG_INT32(1);
 	COLAScanOpaque so = (COLAScanOpaque) scan->opaque;
+
+	if (dir != ForwardScanDirection)
+		elog(ERROR, "COLA only supports forward scan direction");
+
+	if (so->firstCall)
+	{
+		pgstat_count_index_scan(scan->indexRelation);
+		elog(NOTICE, "colagettuple. first call");
+		so->firstCall = false;
+		so->curPageData = so->nPageData = 0;
+		
+		so->curArrState = so->ColaArrayState[0][0];
+		if (!A_ISVISIBLE(so->curArrState)) {
+			so->curArrState = InvalidColaArrayState;
+			so->curBlkno = 0;
+		}
+		else
+			so->curBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), 0);
+	}
 
 	for (;;)
 	{
 		if (so->curPageData < so->nPageData) {
+			elog(NOTICE, "Debug. colagettuple return tuple, curPageData %d nPageData %d", so->curPageData, so->nPageData);
 			/* continuing to return tuples from a leaf page */
 			scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
 			so->curPageData++;
 			PG_RETURN_BOOL(true);
 		}
-		else { //TODO If or While clause?
+		else {
 			if(so->curArrState != InvalidColaArrayState) {
+			elog(NOTICE, "Debug. read array %d.%d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
 				if ((so->curBlkno <= so->searchTo)&&(so->continueArrScan)) {
 					colaScanPage(scan, so->curBlkno, NULL, NULL);
 					so->curBlkno++;
 				}
 				ColaNextScanArray(so);
+				elog(NOTICE, "Debug. colagettuple after ColaNextScanArray, curPageData %d nPageData %d", so->curPageData, so->nPageData);
 			}
-			if 	(so->curArrState == InvalidColaArrayState)		
+			if 	((so->curArrState == InvalidColaArrayState)&&(so->curPageData >= so->nPageData))
 				PG_RETURN_BOOL(false);
 		}
 	}

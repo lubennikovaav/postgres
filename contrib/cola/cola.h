@@ -142,6 +142,7 @@ typedef struct COLAScanOpaqueData
 	ColaState		*colastate;
 	uint16			ColaArrayState[MaxColaHeight][3];
 	bool			continueArrScan;
+	bool			firstCall;
 
 	/* Save rlp while search at level i. When search at level i is finished, copy this values (if !=0 ) to searchFrom and searchTo*/
 	/* If level i contains RLP links to level i+1, save here borders of search at level i+1. */

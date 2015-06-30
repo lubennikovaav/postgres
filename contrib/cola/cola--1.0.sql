@@ -48,6 +48,11 @@ RETURNS int8
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
 
+CREATE OR REPLACE FUNCTION colagettuple(internal, internal)
+RETURNS bool
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
+
 CREATE OR REPLACE FUNCTION colabulkdelete(internal, internal, internal, internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
@@ -83,7 +88,7 @@ CREATE ACCESS METHOD cola (
 	beginscan = colabeginscan,
 	getbitmap = colagetbitmap,
 	rescan = colarescan,
-	getbitmap = colagetbitmap,
+	gettuple = colagettuple,
 	endscan = colaendscan,
 	markpos = colamarkpos,
 	restrpos = colarestrpos,
@@ -105,6 +110,7 @@ DEFAULT FOR TYPE int4 USING cola AS
 	OPERATOR	4	>=(int4, int4),
 	OPERATOR	5	>(int4, int4),
 	FUNCTION	1	btint4cmp(int4,int4);
-/* maxOpNumber set via nstrategies = 3,
+
+/* maxOpNumber set via nstrategies = 5,
  * maxProcNumber set via nsupport = 1 (see above)
  */
