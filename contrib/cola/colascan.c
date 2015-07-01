@@ -71,8 +71,13 @@ uint16 ColaNextScanArray(COLAScanOpaque so) {
 	 * Always read arrays using arrnum order.
 	 */
 	for (i = A_ARRNUM(so->curArrState)+1; i < maxArrnum; i++) {
+		elog(NOTICE, "ColaNextScanArray 1 so->ColaArrayState[%d][%d] %d",level, i, so->ColaArrayState[level][i]);
+		if ((A_ISEXIST(so->ColaArrayState[level][i]))&&(!A_ISVISIBLE(so->ColaArrayState[level][i]))&&(A_ISLINKED(so->ColaArrayState[level][i]))) {
+			elog(NOTICE, "Magic. ColaNextScanArray");
+			newArrState = so->ColaArrayState[level][i];
+		}
 		if ((A_ISVISIBLE(so->ColaArrayState[level][i]))&&(newArrState == InvalidColaArrayState)) {
-			elog(NOTICE, "ColaNextScanArray 2 so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
+			//elog(NOTICE, "Chosen ColaNextScanArray  so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
 			newArrState = so->ColaArrayState[level][i];
 		}
 	}
@@ -224,7 +229,7 @@ _cola_compare_keys(IndexScanDesc scan, IndexTuple tuple)
 	   	result = DatumGetInt32(FunctionCall2Coll(orderFn, key->sk_collation,
 		                                                 datum, key->sk_argument));
 
-	//elog(NOTICE, "Debug. itup %d  key %d result = %d", DatumGetInt32(datum), DatumGetInt32(key->sk_argument), result?1:0 );
+	//elog(NOTICE, "Debug._cola_compare_keys. itup %d  key %d result = %d", DatumGetInt32(datum), DatumGetInt32(key->sk_argument), result?1:0 );
 	}
 	//elog(NOTICE, "Debug. _cola_compare_keys result %d", result);
 	return result;
@@ -250,6 +255,9 @@ _cola_checkkeys(IndexScanDesc scan,COLAScanOpaque so, IndexTuple tuple)
 							  key->sk_attno,
 							  tupdesc,
 							  &isNull);
+
+		//elog(NOTICE, "_cola_checkkeys tuple %d", DatumGetInt32(datum));
+
 		test = FunctionCall2Coll(&key->sk_func, key->sk_collation,
 								 datum, key->sk_argument);
 		if (!DatumGetBool(test))
@@ -259,7 +267,6 @@ _cola_checkkeys(IndexScanDesc scan,COLAScanOpaque so, IndexTuple tuple)
 			 */
 			if ((key->sk_strategy == BTLessStrategyNumber)||(key->sk_strategy == BTLessEqualStrategyNumber)) {
 				/* itup > key. All tuples in the array are sorted, so this array doesn't contain any more tuples matches the key */
-				//elog(NOTICE, "_cola_checkkeys. set so->continueArrScan = false;");
 				so->continueArrScan = false;
 			}
 			return false;
@@ -308,7 +315,7 @@ ColaFindRlp(IndexScanDesc scan, COLAScanOpaque so, IndexTuple it) {
 void
 colaScanPage(IndexScanDesc scan, BlockNumber blkno, TIDBitmap *tbm, int64 *ntids)
 {
-	elog(NOTICE, "Debug. colaScanPage, blkno %d", blkno);
+	//elog(NOTICE, "Debug. colaScanPage. blkno %d", blkno);
 	COLAScanOpaque so = (COLAScanOpaque) scan->opaque;
 	Buffer		buffer;
 	Page		page;
@@ -393,7 +400,7 @@ Datum       colagettuple(PG_FUNCTION_ARGS);
 Datum
 colagettuple(PG_FUNCTION_ARGS)
 {
-	elog(NOTICE, "Debug. colagettuple");
+	//elog(NOTICE, "Debug. colagettuple");
 	IndexScanDesc scan = (IndexScanDesc) PG_GETARG_POINTER(0);
 	ScanDirection dir = (ScanDirection) PG_GETARG_INT32(1);
 	COLAScanOpaque so = (COLAScanOpaque) scan->opaque;
@@ -404,7 +411,6 @@ colagettuple(PG_FUNCTION_ARGS)
 	if (so->firstCall)
 	{
 		pgstat_count_index_scan(scan->indexRelation);
-		elog(NOTICE, "colagettuple. first call");
 		so->firstCall = false;
 		so->curPageData = so->nPageData = 0;
 		
@@ -420,7 +426,6 @@ colagettuple(PG_FUNCTION_ARGS)
 	for (;;)
 	{
 		if (so->curPageData < so->nPageData) {
-			elog(NOTICE, "Debug. colagettuple return tuple, curPageData %d nPageData %d", so->curPageData, so->nPageData);
 			/* continuing to return tuples from a leaf page */
 			scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
 			so->curPageData++;
@@ -428,13 +433,12 @@ colagettuple(PG_FUNCTION_ARGS)
 		}
 		else {
 			if(so->curArrState != InvalidColaArrayState) {
-			elog(NOTICE, "Debug. read array %d.%d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
 				if ((so->curBlkno <= so->searchTo)&&(so->continueArrScan)) {
 					colaScanPage(scan, so->curBlkno, NULL, NULL);
 					so->curBlkno++;
 				}
-				ColaNextScanArray(so);
-				elog(NOTICE, "Debug. colagettuple after ColaNextScanArray, curPageData %d nPageData %d", so->curPageData, so->nPageData);
+				else
+					ColaNextScanArray(so);
 			}
 			if 	((so->curArrState == InvalidColaArrayState)&&(so->curPageData >= so->nPageData))
 				PG_RETURN_BOOL(false);
