@@ -160,11 +160,11 @@ ColaTryInsert(Relation index, ColaInsertState *state, IndexTuple itup) {
 		else {
 			UnlockReleaseBuffer(buf);
 			/*
-			 * Index tuple is inserted into the array.
+			 * Index tuple is inserted into the array at level 0.
 			 * Now array contains data, change state to exists and visible if necessary.
 			 */
 			if ((!A_ISEXIST(arrToInsert))||(!A_ISVISIBLE(arrToInsert))) {
-				arrToInsert |= (CAS_EXISTS | CAS_VISIBLE);
+				arrToInsert |= CAS_EXISTS | CAS_VISIBLE;
 				state->ColaArrayState[levelToInsert][arrnumToInsert] = arrToInsert;
 				saveColaInsertState(state);
 			}

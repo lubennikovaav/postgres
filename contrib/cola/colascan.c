@@ -57,7 +57,7 @@ colabeginscan(PG_FUNCTION_ARGS)
  * if it was merged down. 
  */
 uint16 ColaNextScanArray(COLAScanOpaque so) {
-	//elog(NOTICE, "ColaNextScanArray level %d arrnum %d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
+	elog(NOTICE, "ColaNextScanArray level %d arrnum %d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
 	int i;
 	int level = A_LEVEL(so->curArrState);
 	uint16	newArrState = InvalidColaArrayState;
@@ -71,9 +71,9 @@ uint16 ColaNextScanArray(COLAScanOpaque so) {
 	 * Always read arrays using arrnum order.
 	 */
 	for (i = A_ARRNUM(so->curArrState)+1; i < maxArrnum; i++) {
-		elog(NOTICE, "ColaNextScanArray 1 so->ColaArrayState[%d][%d] %d",level, i, so->ColaArrayState[level][i]);
+		//elog(NOTICE, "ColaNextScanArray 1 so->ColaArrayState[%d][%d] %d",level, i, so->ColaArrayState[level][i]);
 		if ((A_ISEXIST(so->ColaArrayState[level][i]))&&(!A_ISVISIBLE(so->ColaArrayState[level][i]))&&(A_ISLINKED(so->ColaArrayState[level][i]))) {
-			elog(NOTICE, "Magic. ColaNextScanArray");
+			elog(NOTICE, "Magic. ColaNextScanArray %d", so->ColaArrayState[level][i]);
 			newArrState = so->ColaArrayState[level][i];
 		}
 		if ((A_ISVISIBLE(so->ColaArrayState[level][i]))&&(newArrState == InvalidColaArrayState)) {

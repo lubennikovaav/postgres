@@ -420,6 +420,7 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 	state->needPage = !A_ISEXIST(arrInfoMergeTo->arrState);
 
 	/* find arrnums of arrays mergeFrom */
+	//TODO rewrite. check A_ISFULL, not only A_ISVISIBLE
 	arrInfo1->arrState = arrInfo2->arrState = 0;
 	for (i = 0; i <= 2; i++) {
 		arrFrom = state->ColaArrayState[levelFrom][i];
@@ -428,7 +429,6 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 				arrInfo1->arrState = arrFrom;
 			else
 				arrInfo2->arrState = arrFrom;
-		//TODO set state CAS_MERGE for arrFrom here
 		}
 	}
 
@@ -588,8 +588,7 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 	arrInfo1->arrState &= ~CAS_FULL & (~CAS_MERGE) & (~CAS_VISIBLE);
 	arrInfo2->arrState &= ~CAS_FULL & (~CAS_MERGE) & (~CAS_VISIBLE);
 
-	arrInfoMergeTo->arrState |= CAS_FULL | (CAS_VISIBLE) | (CAS_EXISTS);
-	arrInfoMergeTo->arrState |= CAS_EXISTS; //TODO It shouldn't be there. Fix correct state change in ColaInsert?
+	arrInfoMergeTo->arrState |= CAS_FULL | CAS_VISIBLE | CAS_EXISTS;
 	arrInfoMergeTo->arrState &= ~CAS_MERGE;
 
 	// nOldRLPs was inserted --> array is Linked again
@@ -657,7 +656,6 @@ ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state) {
 
 	pfree(state->newRLPs);
 
-	state->ColaArrayState[levelLinkTo][A_ARRNUM(arrLinkTo)] |= CAS_VISIBLE;
-	state->ColaArrayState[levelLinkTo][A_ARRNUM(arrLinkTo)] |= CAS_LINKED;
+	state->ColaArrayState[levelLinkTo][A_ARRNUM(arrLinkTo)] |= CAS_VISIBLE | CAS_LINKED;
 	saveColaInsertState(state);
 }
