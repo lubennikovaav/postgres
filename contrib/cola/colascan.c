@@ -57,30 +57,14 @@ colabeginscan(PG_FUNCTION_ARGS)
  * if it was merged down. 
  */
 uint16 ColaNextScanArray(COLAScanOpaque so) {
-	elog(NOTICE, "ColaNextScanArray level %d arrnum %d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
+	//elog(NOTICE, "ColaNextScanArray level %d arrnum %d", A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState));
 	int i;
 	int level = A_LEVEL(so->curArrState);
 	uint16	newArrState = InvalidColaArrayState;
-	int maxArrnum = 3;
 	int maxCell;
-	if (level == 0)
-		maxArrnum = 2;
 
-	
-	/* Look for next array at the same level.
-	 * Always read arrays using arrnum order.
-	 */
-	for (i = A_ARRNUM(so->curArrState)+1; i < maxArrnum; i++) {
-		//elog(NOTICE, "ColaNextScanArray 1 so->ColaArrayState[%d][%d] %d",level, i, so->ColaArrayState[level][i]);
-		if ((A_ISEXIST(so->ColaArrayState[level][i]))&&(!A_ISVISIBLE(so->ColaArrayState[level][i]))&&(A_ISLINKED(so->ColaArrayState[level][i]))) {
-			elog(NOTICE, "Magic. ColaNextScanArray %d", so->ColaArrayState[level][i]);
-			newArrState = so->ColaArrayState[level][i];
-		}
-		if ((A_ISVISIBLE(so->ColaArrayState[level][i]))&&(newArrState == InvalidColaArrayState)) {
-			//elog(NOTICE, "Chosen ColaNextScanArray  so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
-			newArrState = so->ColaArrayState[level][i];
-		}
-	}
+	if ((level == 0)&&(A_ARRNUM(so->curArrState) == 0))
+		newArrState = so->ColaArrayState[level][1];
 
 	/*
 	 * Scan COLA, looking for Visible array to read.
@@ -88,9 +72,6 @@ uint16 ColaNextScanArray(COLAScanOpaque so) {
 	while ((newArrState == InvalidColaArrayState)&&(level < MaxColaHeight-1)) {
 		level++;
 		for (i = 0; i < 3; i++) {
-			//Is it possible?
-			if ((!A_ISEXIST(so->ColaArrayState[level][i]))&&(A_ISVISIBLE(so->ColaArrayState[level][i])))
-				elog(ERROR, "COLA array %d doesn't exist, but VISIBLE.", so->ColaArrayState[level][i]);
 			if (A_ISVISIBLE(so->ColaArrayState[level][i])) {
 				//elog(NOTICE, "ColaNextScanArray 3 so->ColaArrayState[%d][%d] %d ",level, i, so->ColaArrayState[level][i]);
 				newArrState = so->ColaArrayState[level][i];
@@ -98,44 +79,46 @@ uint16 ColaNextScanArray(COLAScanOpaque so) {
 			}
 		}		
 	}
+
 	//elog(NOTICE,"A_LEVEL(newArrState) %d, A_LEVEL(so->curArrState) %d",A_LEVEL(newArrState), A_LEVEL(so->curArrState) );
+
 	if ((A_LEVEL(newArrState) <  A_LEVEL(so->curArrState))&&(newArrState != InvalidColaArrayState)) {
 		elog(ERROR, "A_LEVEL(newArrState) <  A_LEVEL(so->curArrState)");
 	}
 	so->curArrState = newArrState;
 	so->continueArrScan = true;
+	if (so->curArrState  == InvalidColaArrayState)
+		return so->curArrState;
 
-	if (so->curArrState  == InvalidColaArrayState) {
-		//elog(NOTICE, "Not found visible arrays. It was last filled level.");
-	}
-	else {
-		so->curBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), 0);
-		maxCell = (int) pow(2.0, (double)(A_LEVEL(so->curArrState))) - 1;
+	so->curBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), 0);
+	maxCell = (int) pow(2.0, (double)(A_LEVEL(so->curArrState))) - 1;
 
-		so->maxBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), maxCell);
-		so->searchFrom = so->curBlkno;
-		so->searchTo = so->maxBlkno;
+	so->maxBlkno = ColaGetBlkno(A_LEVEL(so->curArrState), A_ARRNUM(so->curArrState), maxCell);
+	so->searchFrom = so->curBlkno;
+	so->searchTo = so->maxBlkno;
 
-		if (so->rlpFrom != 0) {
-			//elog(NOTICE, "so->searchFrom %d > so->rlpFrom %d", so->searchFrom, so->rlpFrom);
-			so->searchFrom = so->rlpFrom;
-			so->rlpFrom = 0;
+	/*Set left border of scan at the next level*/
+	if (so->rlpFrom != 0) {
+		so->searchFrom = so->rlpFrom;
+		so->rlpFrom = 0;
 
-			if (so->searchFrom < so->curBlkno)
-				elog(ERROR, "so->curBlkno %d > so->searchFrom %d", so->curBlkno, so->searchFrom);
-			
-			so->curBlkno = so->searchFrom;
-		}
+		if (so->searchFrom < so->curBlkno)
+			elog(ERROR, "so->curBlkno %d > so->searchFrom %d", so->curBlkno, so->searchFrom);
 		
-		if (so->rlpTo != 0) {
-			so->searchTo = so->rlpTo;
-			so->rlpTo = 0;
-		}
-		
-		if (so->searchTo > so->maxBlkno)
-			elog(ERROR, "so->searchTo %d > so->maxBlkno %d",so->searchTo, so->maxBlkno);
+		so->curBlkno = so->searchFrom;
 	}
-		//elog (NOTICE, "so->curBlkno %d so->searchTo %d",so->curBlkno, so->searchTo);
+
+	/*Set right border of scan at the next level*/
+	if (so->rlpTo != 0) {
+		so->searchTo = so->rlpTo;
+		so->rlpTo = 0;
+	}
+	
+	if (so->searchTo > so->maxBlkno)
+		elog(ERROR, "so->searchTo %d > so->maxBlkno %d",so->searchTo, so->maxBlkno);
+
+	//elog (NOTICE, "array %d.%d, so->curBlkno %d  : [%d,%d] ",A_LEVEL(so->curArrState),A_ARRNUM(so->curArrState), so->curBlkno,so->searchFrom, so->searchTo);
+
 	return so->curArrState;
 }
 
@@ -280,6 +263,7 @@ _cola_checkkeys(IndexScanDesc scan,COLAScanOpaque so, IndexTuple tuple)
 bool
 ColaFindRlp(IndexScanDesc scan, COLAScanOpaque so, IndexTuple it) {
 	ScanKey key = scan->keyData;
+	BlockNumber tmpRlpFrom;
 	if (IndexTupleIsRLP(it)) {
 
 		if ((key->sk_strategy == BTLessStrategyNumber)||(key->sk_strategy == BTLessEqualStrategyNumber)) {
@@ -294,7 +278,9 @@ ColaFindRlp(IndexScanDesc scan, COLAScanOpaque so, IndexTuple it) {
 		}
 		else { //CompareStrategy Equal
 			if (_cola_compare_keys(scan, it) > 0) {
-				so->rlpTo = BlockIdGetBlockNumber(&it->t_tid.ip_blkid);
+				if (so->rlpTo == 0)
+					so->rlpTo = BlockIdGetBlockNumber(&it->t_tid.ip_blkid);
+				so->continueArrScan = false;
 			}
 			else if (_cola_compare_keys(scan, it) < 0) {
 				so->rlpFrom = BlockIdGetBlockNumber(&it->t_tid.ip_blkid);
@@ -360,8 +346,9 @@ colaScanPage(IndexScanDesc scan, BlockNumber blkno, TIDBitmap *tbm, int64 *ntids
 				so->continueArrScan = true;
 			}
 			/* If reason to continue scan is not founded, break page scan and go to next cola array.*/
-			if(!so->continueArrScan)
+			if(!so->continueArrScan) {
 				break;
+			}
 		}
 
 		if (!match)
