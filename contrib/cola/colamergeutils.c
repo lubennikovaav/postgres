@@ -180,7 +180,7 @@ _cola_merge_0to1(Relation index, ColaInsertState *state) {
 	_cola_spooldestroy(spool);
 
     if(!inserted) {
-		elog(LOG, "COLA index. _cola_merge_0to1. ColaInsert() failed");
+		elog(ERROR, "COLA index. _cola_merge_0to1. ColaInsert() failed");
     	return false;
     }
     else {
@@ -273,17 +273,18 @@ bool
 _cola_merge(Relation index, ColaInsertState *state) {
 	bool merged = false;
 	int levelFrom, levelTo;
-	
+	int a;
+	int arrnumLinkTo = InvalidColaArrayState;
 	/*start merge from level 1 to level 2*/
 	levelFrom = 1;
 	levelTo = levelFrom + 1; 
+	elog(NOTICE, "----- _cola_merge -----");
 
 	while ((!LevelIsSafe(levelFrom,state))&&(levelFrom < MaxColaHeight)) {
 		state->lastMerge = false;
 		
 		/* If next level doesn't contain VISIBLE & FULL array, it would be the last merge --> have to save newRLPs */
 		if (LevelIsEmpty(state, levelTo)) {
-
 			state->lastMerge = true;
 			state->nNewRLPs = (int) pow(2.0, (double)(levelTo));
 			state->newRLPs = palloc(sizeof(IndexTuple)*state->nNewRLPs);
@@ -291,17 +292,48 @@ _cola_merge(Relation index, ColaInsertState *state) {
 
 		merged = ColaMergeDown(levelFrom, index, state);
 
+		//update CAS
+		fillColaInsertState(state);
+
+		for(a = 0; a<3; a++) {
+			if(A_ISMERGE(state->ColaArrayState[levelFrom][a])) {
+				elog(NOTICE, "update CAS MERGE FROM %d.%d", levelFrom, a);
+				state->ColaArrayState[levelFrom][a] &= (~CAS_VISIBLE) & (~CAS_FULL) & (~CAS_MERGE) & (~CAS_LINKED);
+			}
+			else if (A_ISLINKED(state->ColaArrayState[levelFrom][a])) {
+				elog(ERROR, "update CAS LINKED level has RLP %d.%d", levelFrom, a);
+				state->ColaArrayState[levelFrom][a] |= CAS_VISIBLE;
+			}
+			else if (state->nNewRLPs > 0) {
+				elog(NOTICE, "set arrnumLinkTo for CAS not merge  at levelFrom %d.%d = %d", levelFrom, a, state->ColaArrayState[levelFrom][a]);
+				arrnumLinkTo = a;
+			}
+		}
+
+		for(a = 0; a<3; a++) {
+			if (A_ISMERGE(state->ColaArrayState[levelTo][a])) {
+				elog(NOTICE, "update CAS MERGE TO %d.%d", levelTo, a);
+				state->ColaArrayState[levelTo][a] |= CAS_VISIBLE | CAS_FULL | CAS_EXISTS;
+				state->ColaArrayState[levelTo][a] &= ~CAS_MERGE;
+			}
+		}
+
+		saveColaInsertState(state);
+		//end update CAS
+
 		levelFrom++;
 		levelTo = levelFrom + 1;
 	}
 
-	if ((state->nNewRLPs > 0)) {
+	if (state->nNewRLPs > 0) {
+		//elog(NOTICE, "ColaLinkUp call from cola_merge, nNewRLPs %d, nOldRLPs %d", state->nNewRLPs, state->nOldRLPs);
 		/* Merge is completed at level i->i+1. Now link up level i+1 to i*/
 		state->lastMerge = false;
-		ColaLinkUp(levelFrom, index, state);
+		ColaLinkUp(levelFrom, arrnumLinkTo, index, state);
 	}
 
 	state->lastMerge = false;
+
 	return merged;
 }
 
@@ -420,11 +452,10 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 	state->needPage = !A_ISEXIST(arrInfoMergeTo->arrState);
 
 	/* find arrnums of arrays mergeFrom */
-	//TODO rewrite. check A_ISFULL, not only A_ISVISIBLE
 	arrInfo1->arrState = arrInfo2->arrState = 0;
-	for (i = 0; i <= 2; i++) {
+	for (i = 0; i < 3; i++) {
 		arrFrom = state->ColaArrayState[levelFrom][i];
-		if(A_ISVISIBLE(arrFrom)) {
+		if ((A_ISFULL(arrFrom))&&(A_ISVISIBLE(arrFrom))) {
 			if(arrInfo1->arrState == 0)
 				arrInfo1->arrState = arrFrom;
 			else
@@ -585,15 +616,10 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 		}
 	}
 
-	arrInfo1->arrState &= ~CAS_FULL & (~CAS_MERGE) & (~CAS_VISIBLE);
-	arrInfo2->arrState &= ~CAS_FULL & (~CAS_MERGE) & (~CAS_VISIBLE);
-
-	arrInfoMergeTo->arrState |= CAS_FULL | CAS_VISIBLE | CAS_EXISTS;
-	arrInfoMergeTo->arrState &= ~CAS_MERGE;
-
 	// nOldRLPs was inserted --> array is Linked again
-	if (state->nOldRLPs > 0)
+	if (state->nOldRLPs > 0) {
 		arrInfoMergeTo->arrState |= CAS_LINKED;
+	}
 
 	state->ColaArrayState[levelFrom][A_ARRNUM(arrInfo1->arrState)]  = arrInfo1->arrState;
 	state->ColaArrayState[levelFrom][A_ARRNUM(arrInfo2->arrState)]  = arrInfo2->arrState;
@@ -610,11 +636,9 @@ ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state) {
 	return true;
 }
 
-// TODO add CAS_LINKED state flags
 void
-ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state) {
+ColaLinkUp(int levelLinkFrom, int arrnumLinkTo, Relation index, ColaInsertState *state) {
 	int levelLinkTo = levelLinkFrom - 1;
-	int arrnum;
 	uint16 arrLinkTo = InvalidColaArrayState;
 	BlockNumber blkno;
 	Buffer		buf;
@@ -622,14 +646,10 @@ ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state) {
 	int i = 0;
 	IndexTuple itupRLP;
 
+	if (arrnumLinkTo == InvalidColaArrayState)
+		elog(ERROR, "Debug. ColaLinkUp. arrnumLinkTo %d ", arrnumLinkTo);
 
-	for(arrnum = 0; arrnum < 3; arrnum++) {
-		if (!A_ISVISIBLE(state->ColaArrayState[levelLinkTo][arrnum]))
-			 arrLinkTo = state->ColaArrayState[levelLinkTo][arrnum];
-	}
-
-	if (arrLinkTo == InvalidColaArrayState)
-		elog(ERROR, "Debug. ColaLinkUp. arrLinkTo %d ", arrLinkTo);
+	arrLinkTo = state->ColaArrayState[levelLinkTo][arrnumLinkTo];
 
 	blkno = ColaGetBlkno(levelLinkTo, A_ARRNUM(arrLinkTo), cell);
 	buf = ColaGetBuffer(index, blkno);
@@ -638,7 +658,7 @@ ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state) {
 	state->nNewRLPs = state->curNewRLPs;
 
 	/* While state->newRLPs is not empty, insert them at levelLinkTo */
-	for (i = 0; i < state->nNewRLPs; i++) { //TODO
+	for (i = 0; i < state->nNewRLPs; i++) {
 		itupRLP = state->newRLPs[i];
 		if(!ColaPageAddItem(buf, itupRLP, state, levelLinkTo)) {
 			cell++;
@@ -656,6 +676,8 @@ ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state) {
 
 	pfree(state->newRLPs);
 
+	elog(NOTICE, "ColaLinkUp new array with RLP: %d.%d", levelLinkTo, A_ARRNUM(arrLinkTo));
 	state->ColaArrayState[levelLinkTo][A_ARRNUM(arrLinkTo)] |= CAS_VISIBLE | CAS_LINKED;
+
 	saveColaInsertState(state);
 }

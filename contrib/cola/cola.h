@@ -198,7 +198,7 @@ extern void colaInitMergeFrom (Relation index, MergeArrayInfo* arrInfo, int i, i
 extern void colaMergeRest(Relation index,ColaInsertState *state,
 			MergeArrayInfo* arrInfo, MergeArrayInfo* arrInfoMergeTo, int i, int cellMaxFrom, int cellMaxTo);
 extern bool ColaMergeDown(int levelFrom, Relation index, ColaInsertState *state);
-extern void ColaLinkUp(int levelLinkFrom, Relation index, ColaInsertState *state);
+extern void ColaLinkUp(int levelLinkFrom,int arrnumLinkTo, Relation index, ColaInsertState *state);
 
 /* colasort.c */
 extern ColaSpool* _cola_spoolinit(Relation index, TupleDesc tupdesc);
