@@ -278,7 +278,7 @@ _cola_merge(Relation index, ColaInsertState *state) {
 	/*start merge from level 1 to level 2*/
 	levelFrom = 1;
 	levelTo = levelFrom + 1; 
-	elog(NOTICE, "----- _cola_merge -----");
+	//elog(NOTICE, "----- _cola_merge -----");
 
 	while ((!LevelIsSafe(levelFrom,state))&&(levelFrom < MaxColaHeight)) {
 		state->lastMerge = false;
@@ -294,7 +294,7 @@ _cola_merge(Relation index, ColaInsertState *state) {
 
 		//update CAS
 		fillColaInsertState(state);
-
+		/*
 		for(a = 0; a<3; a++) {
 			if(A_ISMERGE(state->ColaArrayState[levelFrom][a])) {
 				elog(NOTICE, "update CAS MERGE FROM %d.%d", levelFrom, a);
@@ -309,10 +309,20 @@ _cola_merge(Relation index, ColaInsertState *state) {
 				arrnumLinkTo = a;
 			}
 		}
+		*/
+
+		for(a = 0; a<3; a++) {
+			if(A_ISMERGE(state->ColaArrayState[levelFrom][a]))
+				state->ColaArrayState[levelFrom][a] &= (~CAS_VISIBLE) & (~CAS_FULL) & (~CAS_MERGE) & (~CAS_LINKED);
+			else if (A_ISLINKED(state->ColaArrayState[levelFrom][a]))
+				state->ColaArrayState[levelFrom][a] |= CAS_VISIBLE;
+			else if (state->nNewRLPs > 0)
+				arrnumLinkTo = a;
+		}
 
 		for(a = 0; a<3; a++) {
 			if (A_ISMERGE(state->ColaArrayState[levelTo][a])) {
-				elog(NOTICE, "update CAS MERGE TO %d.%d", levelTo, a);
+				//elog(NOTICE, "update CAS MERGE TO %d.%d", levelTo, a);
 				state->ColaArrayState[levelTo][a] |= CAS_VISIBLE | CAS_FULL | CAS_EXISTS;
 				state->ColaArrayState[levelTo][a] &= ~CAS_MERGE;
 			}
@@ -676,7 +686,7 @@ ColaLinkUp(int levelLinkFrom, int arrnumLinkTo, Relation index, ColaInsertState 
 
 	pfree(state->newRLPs);
 
-	elog(NOTICE, "ColaLinkUp new array with RLP: %d.%d", levelLinkTo, A_ARRNUM(arrLinkTo));
+	//elog(NOTICE, "ColaLinkUp new array with RLP: %d.%d", levelLinkTo, A_ARRNUM(arrLinkTo));
 	state->ColaArrayState[levelLinkTo][A_ARRNUM(arrLinkTo)] |= CAS_VISIBLE | CAS_LINKED;
 
 	saveColaInsertState(state);
